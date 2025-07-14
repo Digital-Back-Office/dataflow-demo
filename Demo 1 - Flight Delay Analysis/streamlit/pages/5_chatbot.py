@@ -18,7 +18,7 @@ from utils.queries import (
 )
 
 dataflow = Dataflow()
-gemini_api_key = dataflow.secret('gemini_api_key_new')
+gemini_api_key = dataflow.secret('gemini_api_key')
 
 # --- Gemini Setup ---
 genai.configure(api_key=gemini_api_key)
