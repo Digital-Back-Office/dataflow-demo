@@ -38,12 +38,11 @@ This project follows a standard ETL (Extract, Transform, Load) pipeline with a v
 Steps to run the data pipeline:
 
 1. Start Airflow in the Dataflow environment.
-2. Open the Airflow UI and trigger the `bts_pipeline_dag`.
-3. The pipeline will:
-
-   * Extract BTS flight data
-   * Transform it using helper functions
-   * Load it into the configured database
+2. Open the Airflow UI and trigger the `bts_pipeline_dag`. The pipeline will:
+  * Extract BTS flight data
+3. After the first DAG completes trigger `flights_tl`. It will:
+  * Transform extracted data using helper functions
+  * Load it into the configured database
 4. Monitor DAG progress in the Airflow UI.
 
 ---
