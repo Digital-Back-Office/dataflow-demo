@@ -17,6 +17,9 @@ from utils.queries import (
     get_airports
 )
 
+
+st.set_page_config(page_title="Flight Data Chatbot", layout="centered")
+
 dataflow = Dataflow()
 gemini_api_key = dataflow.secret('gemini_api_key')
 
@@ -55,7 +58,6 @@ def get_context_string(data_sources):
     return "\n\n".join(chunks)
 
 # --- Streamlit UI ---
-st.set_page_config(page_title="Flight Data Chatbot", layout="centered")
 st.title("💬 Flight Delay Data Chatbot")
 st.caption("Ask questions about flight delays, airlines, or airports using live data.")
 
