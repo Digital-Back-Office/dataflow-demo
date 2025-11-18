@@ -21,7 +21,7 @@ from utils.queries import (
 st.set_page_config(page_title="Flight Data Chatbot", layout="centered")
 
 dataflow = Dataflow()
-gemini_api_key = dataflow.secret('gemini-api-key')
+gemini_api_key = dataflow.secret('gemini_api_key')
 
 # --- Gemini Setup ---
 genai.configure(api_key=gemini_api_key)
