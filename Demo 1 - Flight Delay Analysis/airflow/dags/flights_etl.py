@@ -445,7 +445,7 @@ with DAG(
     # Use SQLExecuteQueryOperator for schema creation
     create_schema = SQLExecuteQueryOperator(
         task_id='create_schema',
-        conn_id='demo-db',
+        conn_id='demo_db',
         sql=CREATE_TABLES_SQL,
         autocommit=True,
     )
@@ -466,7 +466,7 @@ with DAG(
     # Load data using generated SQL
     load_data = SQLExecuteQueryOperator(
         task_id='load_data_to_db',
-        conn_id='demo-db',
+        conn_id='demo_db',
         sql=get_generated_sql,
         autocommit=True,
     )
