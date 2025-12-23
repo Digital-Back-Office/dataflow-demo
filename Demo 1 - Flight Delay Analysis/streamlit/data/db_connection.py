@@ -1,10 +1,10 @@
 import streamlit as st
-from dataflow.dataflow import Dataflow
+from airflow.providers.postgres.hooks.postgres import PostgresHook
 
 @st.cache_resource
 def get_engine():
-    dataflow = Dataflow()
-    return dataflow.connection("demo_db", mode="engine")
+    hook = PostgresHook(postgres_conn_id="demo_db")
+    return hook.get_sqlalchemy_engine()
 
 def get_db():
     engine = get_engine()
