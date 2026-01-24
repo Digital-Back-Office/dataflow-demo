@@ -69,16 +69,6 @@ table, level_label = get_grid_table_for_zoom(current_zoom)
 # Load data for current view
 df = load_grid_data(table, bbox)
 
-# Controls above the map
-col1, col2 = st.columns([1, 3])
-with col1:
-    if st.button("🔄 Refresh Map", type="primary"):
-        pass  # Will capture state after map renders
-with col2:
-    st.caption("🟢 Safe (< 1) | 🟡 Moderate (1-2) | 🟠 Caution (2-3) | 🔴 Rough (> 3)")
-
-st.write(f"**{level_label}** | {len(df)} grid cells | Zoom: {current_zoom}")
-
 # Create base map at current position
 center_list = get_center_as_list(st.session_state.map_center)
 m = folium.Map(
@@ -120,13 +110,20 @@ map_output = st_folium(
     returned_objects=["center", "zoom", "bounds"]
 )
 
-# Update session state when Refresh button was clicked
-if map_output:
-    if map_output.get('center'):
-        st.session_state.map_center = get_center_as_list(map_output['center'])
-    if map_output.get('zoom'):
-        st.session_state.map_zoom = map_output['zoom']
-    if map_output.get('bounds'):
-        st.session_state.map_bounds = map_output['bounds']
+# Update session state only when user clicks "Refresh Map" button
+col1, col2 = st.columns([1, 3])
+with col1:
+    if st.button("🔄 Refresh Map", type="primary"):
+        if map_output:
+            if map_output.get('center'):
+                # Always store as list [lat, lng]
+                st.session_state.map_center = get_center_as_list(map_output['center'])
+            if map_output.get('zoom'):
+                st.session_state.map_zoom = map_output['zoom']
+            if map_output.get('bounds'):
+                st.session_state.map_bounds = map_output['bounds']
+            st.rerun()
 
-st.caption("Pan/zoom the map to automatically load data for the visible area.")
+# Display current state info
+st.write(f"**{level_label}** | Loaded {len(df)} grid cells | Zoom: {current_zoom}")
+st.caption("Pan/zoom the map, then click 'Refresh Map' to load data for the new area.")
