@@ -265,7 +265,7 @@ def init_db_pool():
     global pg_hook
     try:
         # Use Airflow PostgresHook to manage connections
-        pg_hook = PostgresHook(postgres_conn_id='test_db_1')
+        pg_hook = PostgresHook(postgres_conn_id='ukns_db')
         print("PostgresHook initialized successfully")
     except Exception as e:
         print(f"Warning: Could not initialize PostgresHook: {e}")

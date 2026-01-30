@@ -1,122 +1,97 @@
- # Python
- # Byte-compiled / optimized / DLL files
- __pycache__/
- *.py[cod]
- *$py.class
- *.pyc
+# =========================
+# GENERAL
+# =========================
+.DS_Store
+Thumbs.db
 
- # C extensions
- *.so
+# =========================
+# PYTHON
+# =========================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+*.log
 
- # Distribution / packaging
- build/
- dist/
- *.egg-info/
- *.egg
- pip-wheel-metadata/
+# Virtual environments
+venv/
+env/
+.venv/
+ENV/
 
- # Virtual environments
- .venv/
- venv/
- env/
- ENV/
- venv.bak/
- .Python
+# =========================
+# JUPYTER NOTEBOOKS
+# =========================
+.ipynb_checkpoints/
+*.ipynb_checkpoints
 
- # Installer logs
- *pip-log.txt
- *pip-delete-this-directory.txt
+# Optional: ignore notebook outputs
+# *.ipynb
 
- # Unit test / coverage reports
- .pytest_cache/
- .tox/
- *.cover
- *.coverage
- *.coverage.*
- htmlcov/
- .hypothesis/
+# =========================
+# DBT
+# =========================
+target/
+dbt_packages/
+logs/
+.env
+profiles.yml
 
- # Translations
- *.mo
- *.pot
+# =========================
+# AIRFLOW
+# =========================
+airflow.db
+airflow.cfg
+webserver_config.py
+airflow-webserver.pid
+logs/
+plugins/__pycache__/
 
- # Django stuff:
- *.log
- local_settings.py
- db.sqlite3
- db.sqlite3-journal
+# =========================
+# DASH / WEB APP
+# =========================
+*.env
+.env.local
+.env.production
 
- # Flask stuff:
- instance/
- .webassets-cache
+# =========================
+# CACHE / TEMP FILES
+# =========================
+.cache/
+.pytest_cache/
+.mypy_cache/
+ruff_cache/
 
- # Jupyter Notebook
- .ipynb_checkpoints
+# =========================
+# DATA FILES (OPTIONAL)
+# =========================
+data/raw/
+data/processed/
+*.csv
+*.parquet
+*.json
 
- # IPython
- profile_default/
- ipython_config.py
+# =========================
+# IDE / EDITORS
+# =========================
+.vscode/
+.idea/
+*.swp
 
- # pyenv
- python-version
+# =========================
+# SECRETS / CREDENTIALS
+# =========================
+secrets/
+credentials/
+*.pem
+*.key
 
- # mypy
- .mypy_cache/
-
- # VS Code
- .vscode/
-
- # IDEs
- .idea/
- *.sublime-project
- *.sublime-workspace
-
- # OS files
- .DS_Store
- Thumbs.db
-
- # Environment variables files
- .env
- .env.*
- env.local
-
- # Streamlit
- # Streamlit stores credentials and settings in .streamlit/ by default
- .streamlit/
-
- # Airflow
- # Ignore airflow DB, logs, and PID/webserver files
- airflow.cfg
- airflow.db
- webserver.pid
- logs/
- airflow-sqlite.db
-
- # Dash / Frontend
- # Common frontend build artifacts and node modules
- node_modules/
- build/
- dist/
- npm-debug.log*
- yarn-debug.log*
- yarn-error.log*
-
- # General artifacts
- *.log
- *.tmp
- *.temp
- *.bak
-
- # Notebook output and checkpoints
- *.nbconvert.ipynb
-
- # Local data caches (uncomment if you want to ignore local data folders)
- # data/
-
- # Ignore secrets and keys
- *.pem
- *.key
- secrets.json
-
- # End of .gitignore
-
+# =========================
+# SYSTEM TEMP FILES
+# =========================
+tmp/
+temp/

@@ -8,22 +8,26 @@ import pandas as pd
 import os
 import json
 
+def get_data_path():
+    """Get the data directory path based on runtime environment"""
+    if os.getenv("RUNTIME"):
+        return "/opt/airflow/shared/demo-projects/neighbourhood_score/data"
+    else:
+        return "/home/jovyan/shared/demo-projects/neighbourhood_score/data"
 
 def load_lsoa_boundaries():
     """Load LSOA boundaries from GeoJSON into PostGIS."""
     import geopandas as gpd
 
-    hook = PostgresHook(postgres_conn_id='new_conn')
+    hook = PostgresHook(postgres_conn_id='ukns_db')
     conn = hook.get_conn()
     cursor = conn.cursor()
     print("Loading LSOA boundaries into PostGIS...")
 
-    # Load GeoJSON
-    gdf = gpd.read_file('/home/jovyan/shared/neighbourhood_score/data/lsoa_boundaries.geojson')
+    gdf = gpd.read_file(os.path.join(get_data_path(), 'lsoa_boundaries.geojson'))
     gdf = gdf[['LSOA21CD', 'LSOA21NM', 'geometry']].rename(columns={'LSOA21CD': 'lsoa_code', 'LSOA21NM': 'lsoa_name'})
     print(f"Loaded {len(gdf)} LSOA boundaries from GeoJSON.")
 
-    # Create table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS lsoa_boundaries (
             lsoa_code TEXT PRIMARY KEY,
@@ -36,10 +40,8 @@ def load_lsoa_boundaries():
     conn.commit()
     print("LSOA boundaries table created/truncated.")
 
-    # Insert geometries in batches using execute_values for better performance
     from psycopg2.extras import execute_values
     
-    # Prepare data as list of tuples
     batch_size = 1000
     data = []
     for _, row in gdf.iterrows():
@@ -62,49 +64,146 @@ def load_lsoa_boundaries():
     print("LSOA boundaries loaded.")
 
 
+def load_msoa_boundaries():
+    """Load MSOA boundaries from GeoJSON into PostGIS."""
+    import geopandas as gpd
+
+    hook = PostgresHook(postgres_conn_id='ukns_db')
+    conn = hook.get_conn()
+    cursor = conn.cursor()
+    print("Loading MSOA boundaries into PostGIS...")
+
+    # Load GeoJSON
+    gdf = gpd.read_file(os.path.join(get_data_path(), 'msoa_boundaries.geojson'))
+    gdf = gdf[['MSOA21CD', 'MSOA21NM', 'geometry']].rename(columns={'MSOA21CD': 'msoa_code', 'MSOA21NM': 'msoa_name'})
+    print(f"Loaded {len(gdf)} MSOA boundaries from GeoJSON.")
+
+    # Create table
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS msoa_boundaries (
+            msoa_code TEXT PRIMARY KEY,
+            msoa_name TEXT,
+            geom GEOMETRY(MultiPolygon, 4326)
+        );
+        TRUNCATE msoa_boundaries;
+        CREATE INDEX IF NOT EXISTS idx_msoa_geom ON msoa_boundaries USING GIST (geom);
+    """)
+    conn.commit()
+    print("MSOA boundaries table created/truncated.")
+
+    from psycopg2.extras import execute_values
+    
+    # Prepare data as list of tuples
+    batch_size = 1000
+    data = []
+    for _, row in gdf.iterrows():
+        geojson_str = json.dumps(row['geometry'].__geo_interface__)
+        data.append((row['msoa_code'], row['msoa_name'], geojson_str))
+    
+    # Insert in batches
+    for i in range(0, len(data), batch_size):
+        batch = data[i:i + batch_size]
+        execute_values(
+            cursor,
+            "INSERT INTO msoa_boundaries (msoa_code, msoa_name, geom) VALUES %s",
+            batch,
+            template="(%s, %s, ST_Multi(ST_GeomFromGeoJSON(%s)))"
+        )
+        conn.commit()
+        print(f"Inserted batch {i // batch_size + 1} ({len(batch)} rows)")
+    cursor.close()
+    conn.close()
+    print("MSOA boundaries loaded.")
+
+
+def load_lad_boundaries():
+    """Load LAD boundaries from GeoJSON into PostGIS."""
+    import geopandas as gpd
+
+    hook = PostgresHook(postgres_conn_id='ukns_db')
+    conn = hook.get_conn()
+    cursor = conn.cursor()
+    print("Loading LAD boundaries into PostGIS...")
+
+    gdf = gpd.read_file(os.path.join(get_data_path(), 'lad_boundaries.geojson'))
+    gdf = gdf[['LAD21CD', 'LAD21NM', 'geometry']].rename(columns={'LAD21CD': 'lad_code', 'LAD21NM': 'lad_name'})
+    print(f"Loaded {len(gdf)} LAD boundaries from GeoJSON.")
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lad_boundaries (
+            lad_code TEXT PRIMARY KEY,
+            lad_name TEXT,
+            geom GEOMETRY(MultiPolygon, 4326)
+        );
+        TRUNCATE lad_boundaries;
+        CREATE INDEX IF NOT EXISTS idx_lad_geom ON lad_boundaries USING GIST (geom);
+    """)
+    conn.commit()
+    print("LAD boundaries table created/truncated.")
+
+    from psycopg2.extras import execute_values
+    
+    batch_size = 1000
+    data = []
+    for _, row in gdf.iterrows():
+        geojson_str = json.dumps(row['geometry'].__geo_interface__)
+        data.append((row['lad_code'], row['lad_name'], geojson_str))
+    
+    # Insert in batches
+    for i in range(0, len(data), batch_size):
+        batch = data[i:i + batch_size]
+        execute_values(
+            cursor,
+            "INSERT INTO lad_boundaries (lad_code, lad_name, geom) VALUES %s",
+            batch,
+            template="(%s, %s, ST_Multi(ST_GeomFromGeoJSON(%s)))"
+        )
+        conn.commit()
+        print(f"Inserted batch {i // batch_size + 1} ({len(batch)} rows)")
+    cursor.close()
+    conn.close()
+    print("LAD boundaries loaded.")
+
+
 def download_crime_data():
     """Download latest crime data from Police.uk, extract, process, and save as CSV."""
     import requests
     import zipfile
-    import os
-    import pandas as pd
     import glob
 
-    data_dir = '/home/jovyan/shared/neighbourhood_score/data'
+    data_dir = get_data_path()
     zip_path = os.path.join(data_dir, 'crime_latest.zip')
     extract_path = os.path.join(data_dir, 'crime_unzipped')
     output_csv = os.path.join(data_dir, 'crime_data.csv')
 
-    # Step 1: Download the zip
+    # download and unzip
     url = "https://data.police.uk/data/archive/latest.zip"
     print("Downloading latest crime data zip...")
-    response = requests.get(url, timeout=300)  # 5 min timeout
+    response = requests.get(url, timeout=600)  # 10 min timeout
     if response.status_code != 200:
         raise Exception(f"Failed to download zip: {response.status_code}")
     with open(zip_path, 'wb') as f:
         f.write(response.content)
-    print(f"Downloaded {len(response.content)} bytes.")
+    print(f"Download complete")
 
-    # Step 2: Unzip
     os.makedirs(extract_path, exist_ok=True)
     print("Unzipping...")
     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
         zip_ref.extractall(extract_path)
     print("Unzipped.")
 
-    # Step 3: Find latest month directory
+    # contains all month dirs, find latest
     dirs = [d for d in os.listdir(extract_path) if os.path.isdir(os.path.join(extract_path, d))]
     dirs.sort(reverse=True)
     latest_dir = dirs[0]
     latest_path = os.path.join(extract_path, latest_dir)
     print(f"Latest directory: {latest_dir}")
 
-    # Step 4: Find street CSVs
+    # find street CSVs
     csv_pattern = os.path.join(latest_path, f"{latest_dir}-*-street.csv")
     csv_files = glob.glob(csv_pattern)
     print(f"Found {len(csv_files)} street CSV files.")
 
-    # Step 5: Read and combine
     dfs = []
     for csv_file in csv_files:
         try:
@@ -117,7 +216,7 @@ def download_crime_data():
     crime_df = pd.concat(dfs, ignore_index=True)
     print(f"Total raw rows: {len(crime_df)}")
 
-    # Step 6: Clean
+    # clean
     crime_df = crime_df.dropna(subset=['Latitude', 'Longitude'])
     crime_df['Latitude'] = pd.to_numeric(crime_df['Latitude'], errors='coerce')
     crime_df['Longitude'] = pd.to_numeric(crime_df['Longitude'], errors='coerce')
@@ -143,11 +242,10 @@ def download_crime_data():
 
     print(f"Cleaned rows: {len(crime_df)}")
 
-    # Step 7: Save
     crime_df.to_csv(output_csv, index=False)
     print(f"Saved to {output_csv}")
 
-    # Cleanup: remove zip and unzipped to save space
+    # Cleanup: remove zip and unzipped
     os.remove(zip_path)
     import shutil
     shutil.rmtree(extract_path)
@@ -164,8 +262,8 @@ def clean_hygiene_data():
       - Drop rows missing Latitude or Longitude
       - Output columns match existing dbt seed schema: fhrs_id,business_name,rating_value,latitude,longitude,hygiene_score,structural_score,confidence_score,distance
     """
-    RAW = '/home/jovyan/shared/neighbourhood_score/data/hygiene_data_all.csv'
-    OUT = '/home/jovyan/shared/neighbourhood_score/data/hygiene_data.csv'
+    RAW = os.path.join(get_data_path(), 'hygiene_data_all.csv')
+    OUT = os.path.join(get_data_path(), 'hygiene_data.csv')
     os.makedirs(os.path.dirname(OUT), exist_ok=True)
 
     mapping = {
@@ -220,7 +318,7 @@ def clean_hygiene_data():
 
 def load_seeds_to_db():
     """Bulk load CSV seeds into Postgres using COPY for speed."""
-    hook = PostgresHook(postgres_conn_id='new_conn')
+    hook = PostgresHook(postgres_conn_id='ukns_db')
     conn = hook.get_conn()
     cursor = conn.cursor()
 
@@ -290,54 +388,61 @@ default_args = {
     'start_date': days_ago(1),
     'email_on_failure': False,
     'email_on_retry': False,
-    'retries': 3,
+    'retries': 1,
     'retry_delay': timedelta(minutes=5),
 }
 
 dag = DAG(
     'neighbourhood_score_pipeline',
-    default_args=default_args,
+    # default_args=default_args,
     description='Pipeline to pull data, process with dbt for Neighbourhood Score',
-    schedule_interval=timedelta(days=1),
+    # schedule_interval=timedelta(days=1),
+    schedule_interval=None,
     catchup=False,
 )
 
-# Task 0: Load LSOA boundaries (one-time or as needed)
+# Load LSOA boundaries (one-time or as needed)
 load_lsoa = PythonOperator(
     task_id='load_lsoa_boundaries',
     python_callable=load_lsoa_boundaries,
     dag=dag,
 )
 
-# Task 1: Download and process latest crime data
-download_crime = PythonOperator(
-    task_id='download_crime_data',
-    python_callable=download_crime_data,
+# Load MSOA boundaries (one-time or as needed)
+load_msoa = PythonOperator(
+    task_id='load_msoa_boundaries',
+    python_callable=load_msoa_boundaries,
     dag=dag,
 )
 
-# Task 2: Clean hygiene data from raw full dataset
+# Load LAD boundaries (one-time or as needed)
+load_lad = PythonOperator(
+    task_id='load_lad_boundaries',
+    python_callable=load_lad_boundaries,
+    dag=dag,
+)
+
+# Download and process latest crime data
+# download_crime = PythonOperator(
+#     task_id='download_crime_data',
+#     python_callable=download_crime_data,
+#     dag=dag,
+# )
+
+# Clean hygiene data from raw full dataset
 clean_hygiene = PythonOperator(
     task_id='clean_hygiene_data',
     python_callable=clean_hygiene_data,
     dag=dag,
 )
 
-# Task 3: Copy CSVs to dbt seeds
-copy_to_seeds = BashOperator(
-    task_id='copy_data_to_seeds',
-    bash_command='rm -f /home/jovyan/shared/neighbourhood_score/dbt/seeds/*.csv && cp /home/jovyan/shared/neighbourhood_score/data/*.csv /home/jovyan/shared/neighbourhood_score/dbt/seeds/',
-    dag=dag,
-)
-
-# Task 4: Bulk load seeds into DB
+# Bulk load seeds into DB
 load_seeds = PythonOperator(
     task_id='load_seeds',
     python_callable=load_seeds_to_db,
     dag=dag,
 )
 
-# Task 5: dbt run
 dbt_run = BashOperator(
     task_id='dbt_run',
     bash_command='cd /home/jovyan/shared/neighbourhood_score/dbt && dbt run',
@@ -345,4 +450,7 @@ dbt_run = BashOperator(
 )
 
 # Set dependencies
-load_lsoa >> download_crime >> clean_hygiene >> copy_to_seeds >> load_seeds >> dbt_run
+# load_lsoa >> download_crime >> clean_hygiene >> copy_to_seeds >> load_seeds >> dbt_run
+load_lsoa >> clean_hygiene >> load_seeds >> dbt_run
+load_msoa >> dbt_run
+load_lad >> dbt_run
