@@ -2,7 +2,7 @@ name: 'neighbourhood_score'
 version: '1.0.0'
 config-version: 2
 
-profile: 'new_conn'
+profile: 'ukns_db'
 
 model-paths: ["models"]
 analysis-paths: ["analyses"]
