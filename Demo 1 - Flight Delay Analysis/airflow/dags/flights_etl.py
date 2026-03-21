@@ -6,6 +6,7 @@ import pandas as pd
 import time
 from io import BytesIO
 from airflow import DAG
+from airflow.hooks.base import BaseHook
 from airflow.operators.python import PythonOperator
 from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 from datetime import datetime, timedelta
@@ -209,6 +210,18 @@ def process_bts_data(**kwargs):
     except Exception as e:
         raise Exception(f"Failed to process CSV: {e}")
 
+
+def is_sqlite_conn(conn_id: str = "demo_db") -> bool:
+    try:
+        conn = BaseHook.get_connection(conn_id)
+        return (conn.conn_type or "").lower() == "sqlite"
+    except Exception:
+        return False
+
+
+def limit_rows_for_sqlite(rows, limit: int):
+    return rows[:limit] if rows else rows
+
 def run_transform_and_load(**kwargs):
     try:
         base_path = SAVE_DIR
@@ -228,6 +241,10 @@ def run_transform_and_load(**kwargs):
 
         airports = pd.read_csv(os.path.join(base_path, "airports.csv"))
         airlines = pd.read_csv(os.path.join(base_path, "airlines.csv"), sep='^')
+        sqlite_mode = is_sqlite_conn("demo_db")
+
+        if sqlite_mode:
+            logger.info("🧪 SQLite mode detected: generating minimal SQL dataset for faster loads")
 
         transforms = [
             get_delay_distribution(new_df),
@@ -239,6 +256,22 @@ def run_transform_and_load(**kwargs):
             get_origin_airport_stats(new_df),
             get_airline_performance_stats(new_df),
         ]
+
+        if sqlite_mode:
+            sqlite_limits = {
+                "delay_distribution": 15,
+                "flight_statistics_summary": 20,
+                "delay_vs_hour": 80,
+                "hourly_avg_delay": 24,
+                "top10_origin_airports_by_delay": 10,
+                "weekday_avg_delay": 7,
+                "origin_airport_stats": 25,
+                "airline_performance_stats": 20,
+            }
+            transforms = [
+                (table, limit_rows_for_sqlite(rows, sqlite_limits.get(table, 20)))
+                for table, rows in transforms
+            ]
 
         logger.info("📊 Running transformations and generating SQL...")
 
@@ -297,6 +330,9 @@ def run_transform_and_load(**kwargs):
             'LATITUDE': 'latitude', 
             'LONGITUDE': 'longitude'
         })[['iata_code', 'airport', 'city', 'state', 'latitude', 'longitude']]
+
+        if sqlite_mode:
+            airports_renamed = airports_renamed.head(150)
         
         for _, row in airports_renamed.iterrows():
             values = []
@@ -316,6 +352,9 @@ def run_transform_and_load(**kwargs):
         # Generate SQL for airlines
         logger.info("📦 Generating SQL for airline names...")
         airlines_renamed = airlines.rename(columns={'name': 'airline'})[['iata_code', 'airline']]
+
+        if sqlite_mode:
+            airlines_renamed = airlines_renamed.head(120)
         
         for _, row in airlines_renamed.iterrows():
             iata_code = str(row['iata_code']).replace("'", "''")
@@ -328,7 +367,7 @@ def run_transform_and_load(**kwargs):
         with open(sql_file, 'w') as f:
             f.write('\n'.join(sql_statements))
         
-        logger.info(f"✅ Generated {len(sql_statements)} SQL statements saved to {sql_file}")
+        logger.info(f"✅ Generated {len(sql_statements)} SQL statements saved to {sql_file} (sqlite_mode={sqlite_mode})")
         
         logger.info("✅ ETL pipeline execution complete")
 
@@ -337,7 +376,7 @@ def run_transform_and_load(**kwargs):
         raise
 
 def get_generated_sql(**kwargs):
-    """Read the generated SQL file and return its contents""" 
+    """Read generated SQL and return backend-friendly format."""
     data_path = SAVE_DIR
     
     sql_file = os.path.join(data_path, "generated_sql.sql")
@@ -345,6 +384,8 @@ def get_generated_sql(**kwargs):
     
     with open(sql_file, 'r') as f:
         sql_content = f.read()
+
+    sql_statements = [stmt.strip() for stmt in sql_content.split(';') if stmt.strip()]
     
     # Clean up the SQL file
     try:
@@ -352,8 +393,11 @@ def get_generated_sql(**kwargs):
         logger.info(f"🗑️ Cleaned up SQL file: {sql_file}")
     except OSError as e:
         logger.warning(f"⚠️ Failed to remove SQL file: {e}")
-    
-    return sql_content
+
+    if is_sqlite_conn("demo_db"):
+        return sql_statements
+
+    return ';\n'.join(sql_statements) + ';'
 
 # SQL for schema creation
 CREATE_TABLES_SQL = """
@@ -446,7 +490,7 @@ with DAG(
     create_schema = SQLExecuteQueryOperator(
         task_id='create_schema',
         conn_id='demo_db',
-        sql=CREATE_TABLES_SQL,
+        sql=[stmt.strip() for stmt in CREATE_TABLES_SQL.split(";") if stmt.strip()],
         autocommit=True,
     )
 
