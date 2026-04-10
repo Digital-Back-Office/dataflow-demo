@@ -375,128 +375,114 @@ if not st.session_state.uploaded_docs:
     </div>
     """, unsafe_allow_html=True)
 else:
-    tab_pages, tab_summary, tab_risk, tab_renewal, tab_ask = st.tabs([
-        "📑 Page Analysis", "📝 Summary", "⚠️ Risk Detection", "🔄 Renewals", "💬 Legal Q&A",
+    tab_overview, tab_deep, tab_ask = st.tabs([
+        "👁️ Master Overview", "🔍 Deep Analysis (Risks & Pages)", "💬 Legal Q&A"
     ])
 
-    # ── Page Analysis ──────────────────────────────────────────────────────────
-    with tab_pages:
-        st.subheader("📑 Page-Level Intelligence")
+    # ── Master Overview ────────────────────────────────────────────────────────
+    with tab_overview:
         sel = st.session_state.get("selected_doc")
-
         if sel is None or sel == "All Documents":
-            st.info("Select a specific document from the sidebar for page analysis.")
+            st.info("Select a specific document from the sidebar for the Master Overview.")
         elif sel not in st.session_state.uploaded_docs:
             st.warning(f"Document '{sel}' not found.")
         else:
             ch = _content_hash(sel)
-            cached = st.session_state.cache.get(sel, "page_analysis", ch)
-            if cached is None:
-                st.info("Analysis is being prepared — please wait...")
+            sum_cached = st.session_state.cache.get(sel, "summary", ch)
+            ren_cached = st.session_state.cache.get(sel, "renewal", ch)
+            
+            if sum_cached is None or ren_cached is None:
+                st.info("Master Overview is being prepared — please wait...")
             else:
-                for r in cached:
+                col1, col2 = st.columns([6, 4])
+                with col1:
+                    st.subheader("📊 Executive Summary")
+                    st.markdown(sum_cached.get("executive", "N/A"))
+                    st.divider()
+                    st.subheader("📝 Key Sections")
+                    for s in sum_cached.get("sections", []):
+                        with st.expander(f"📄 {s['title']}"):
+                            st.markdown(s["summary"])
+                with col2:
+                    st.subheader("🔄 Renewal & Expiry")
+                    st.markdown(ren_cached.get("raw_analysis", "No analysis available."))
+                    renewals = ren_cached.get("renewals", [])
+                    if renewals:
+                        for item in renewals:
+                            st.divider()
+                            for key, val in item.items():
+                                st.markdown(f"**{key.replace('_', ' ').title()}:** {val}")
+
+    # ── Deep Analysis ──────────────────────────────────────────────────────────
+    with tab_deep:
+        sel = st.session_state.get("selected_doc")
+        if sel is None or sel == "All Documents":
+            st.info("Select a specific document from the sidebar for deep analysis.")
+        elif sel not in st.session_state.uploaded_docs:
+            st.warning(f"Document '{sel}' not found.")
+        else:
+            ch = _content_hash(sel)
+            risk_cached = st.session_state.cache.get(sel, "risk", ch)
+            page_cached = st.session_state.cache.get(sel, "page_analysis", ch)
+            
+            if risk_cached is None or page_cached is None:
+                st.info("Deep analysis is being prepared — please wait...")
+            else:
+                st.subheader("⚠️ High-Level Legal Risks")
+                risks = risk_cached.get("risks", [])
+                if risks:
+                    for risk in risks:
+                        sev = risk.get("severity", "Medium").lower()
+                        css_class = "risk-high" if "high" in sev else ("risk-medium" if "medium" in sev else "risk-low")
+                        st.markdown(
+                            f'<div class="{css_class}">'
+                            f'<strong>{risk.get("category", "Risk")}</strong> ({risk.get("severity", "N/A")})<br>'
+                            f'{risk.get("description", "")}'
+                            f'</div>',
+                            unsafe_allow_html=True,
+                        )
+                else:
+                    st.success("No high-level risks detected.")
+
+                st.divider()
+                st.subheader("📑 Page-Level Intelligence & Risks")
+                doc_info = st.session_state.uploaded_docs.get(sel, {})
+                pages = doc_info.get("pages", [])
+                
+                # Merge page analysis and risk pages
+                risk_pages_cached = st.session_state.cache.get(sel, "risk_pages", ch) or []
+                risk_page_map = {r["page_num"]: r for r in risk_pages_cached}
+
+                for r in page_cached:
+                    p_num = r.get("page_num", 0)
+                    rc = risk_page_map.get(p_num, {})
+                    
                     importance = r.get("importance", "Medium")
                     score = r.get("score", 5)
-                    if importance.lower() in ["critical", "high"] or score >= 7:
+                    has_risk = rc.get("has_risks", False)
+                    
+                    if has_risk or importance.lower() in ["critical", "high"] or score >= 7:
                         badge_color = "🔴"
                     elif importance.lower() == "medium" or score >= 4:
                         badge_color = "🟡"
                     else:
                         badge_color = "🟢"
-                    with st.expander(f"{badge_color} Page {r['page_num']} — {importance} (Score: {score}/10)"):
-                        st.markdown(f"**Summary:** {r.get('summary', 'N/A')}")
-                        topics = r.get("key_topics", [])
-                        if topics:
-                            st.markdown(f"**Key Topics:** {', '.join(topics)}")
-
-    # ── Summary ────────────────────────────────────────────────────────────────
-    with tab_summary:
-        st.subheader("📝 Legal Document Summary")
-        sel = st.session_state.get("selected_doc")
-
-        if sel is None or sel == "All Documents":
-            st.info("Select a specific document from the sidebar.")
-        elif sel not in st.session_state.uploaded_docs:
-            st.warning(f"Document '{sel}' not found.")
-        else:
-            ch = _content_hash(sel)
-            cached = st.session_state.cache.get(sel, "summary", ch)
-            if cached is None:
-                st.info("Summary is being prepared — please wait...")
-            else:
-                st.markdown("### 📊 Executive Summary")
-                st.markdown(cached.get("executive", "N/A"))
-                st.divider()
-                st.markdown("### 📝 Section Summaries")
-                for s in cached.get("sections", []):
-                    with st.expander(f"📄 {s['title']}"):
-                        st.markdown(s["summary"])
-
-    # ── Risk Detection ─────────────────────────────────────────────────────────
-    with tab_risk:
-        st.subheader("⚠️ Legal Risk Detection")
-        sel = st.session_state.get("selected_doc")
-
-        if sel is None or sel == "All Documents":
-            st.info("Select a specific document from the sidebar.")
-        elif sel not in st.session_state.uploaded_docs:
-            st.warning(f"Document '{sel}' not found.")
-        else:
-            ch = _content_hash(sel)
-            risk_mode = st.radio("View mode", ["Full Document", "Page-by-Page"], horizontal=True, key="risk_mode")
-
-            if risk_mode == "Full Document":
-                cached = st.session_state.cache.get(sel, "risk", ch)
-                if cached is None:
-                    st.info("Risk analysis is being prepared — please wait...")
-                else:
-                    st.markdown(f"### 📄 {sel}")
-                    st.markdown(cached.get("raw_analysis", "No analysis available."))
-                    risks = cached.get("risks", [])
-                    if risks:
-                        for risk in risks:
-                            sev = risk.get("severity", "Medium").lower()
-                            css_class = "risk-high" if "high" in sev else ("risk-medium" if "medium" in sev else "risk-low")
-                            st.markdown(
-                                f'<div class="{css_class}">'
-                                f'<strong>{risk.get("category", "Risk")}</strong> ({risk.get("severity", "N/A")})<br>'
-                                f'{risk.get("description", "")}'
-                                f'</div>',
-                                unsafe_allow_html=True,
-                            )
-            else:
-                cached = st.session_state.cache.get(sel, "risk_pages", ch)
-                if cached is None:
-                    st.info("Page-by-page risk analysis is being prepared — please wait...")
-                else:
-                    for r in cached:
-                        icon = "🔴" if r.get("has_risks") else "🟢"
-                        with st.expander(f"{icon} Page {r['page_num']}"):
-                            st.markdown(r.get("risk_summary", "N/A"))
-
-    # ── Renewal Detection ──────────────────────────────────────────────────────
-    with tab_renewal:
-        st.subheader("🔄 Policy / Contract Renewal Detection")
-        sel = st.session_state.get("selected_doc")
-
-        if sel is None or sel == "All Documents":
-            st.info("Select a specific document from the sidebar for renewal detection.")
-        elif sel not in st.session_state.uploaded_docs:
-            st.warning(f"Document '{sel}' not found.")
-        else:
-            ch = _content_hash(sel)
-            cached = st.session_state.cache.get(sel, "renewal", ch)
-            if cached is None:
-                st.info("Renewal analysis is being prepared — please wait...")
-            else:
-                st.markdown("### 📋 Renewal & Expiry Analysis")
-                st.markdown(cached.get("raw_analysis", "No analysis available."))
-                renewals = cached.get("renewals", [])
-                if renewals:
-                    for item in renewals:
-                        st.divider()
-                        for key, val in item.items():
-                            st.markdown(f"**{key.replace('_', ' ').title()}:** {val}")
+                        
+                    with st.expander(f"{badge_color} Page {p_num} — {importance} (Score: {score}/10) | {'⚠️ Risks Detected' if has_risk else '✅ Clear'}"):
+                        p_col1, p_col2 = st.columns([1, 1])
+                        with p_col1:
+                            st.markdown(f"**Topics:** {', '.join(r.get('key_topics', []))}")
+                            st.markdown(f"**Summary:** {r.get('summary', 'N/A')}")
+                            if has_risk:
+                                st.markdown(f"**Risks:** {rc.get('risk_summary', 'N/A')}")
+                        with p_col2:
+                            page_text = "Text not available."
+                            for p in pages:
+                                if p.get("page_num") == p_num:
+                                    page_text = p.get("text", "")
+                                    break
+                            st.markdown("**Original Text Snippet:**")
+                            st.info(f"_{page_text[:800]}..._" if len(page_text) > 800 else f"_{page_text}_")
 
     # ── Legal Q&A ──────────────────────────────────────────────────────────────
     with tab_ask:
