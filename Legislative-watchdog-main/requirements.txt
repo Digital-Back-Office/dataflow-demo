@@ -1,0 +1,9 @@
+requests
+beautifulsoup4
+apache-airflow-providers-http
+apache-airflow-providers-postgres
+streamlit
+supabase
+requests
+python-dotenv
+groq

@@ -1,0 +1,6 @@
+streamlit
+sqlalchemy
+python-dotenv
+requests
+passlib[bcrypt]
+bcrypt==4.0.1
