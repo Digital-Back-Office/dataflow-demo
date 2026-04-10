@@ -1,0 +1,19 @@
+lxml>=4.9.0
+
+# Local Embeddings (runs on CPU, no API cost)
+sentence-transformers>=2.2.0
+numpy>=1.24.0
+
+# Vector Store (ChromaDB - persistent, no server needed)
+chromadb>=0.4.0
+
+# LLM Integration (Groq - free tier)
+groq>=0.4.0
+
+# Document loading & PDF rendering
+PyPDF2>=3.0.0
+python-docx>=0.8.11
+
+# Environment and utilities
+python-dotenv>=1.0.0
+tqdm>=4.66.0
