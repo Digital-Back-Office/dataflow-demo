@@ -585,17 +585,19 @@ def _render_rec_cards_in_chat(recs: list[dict], diet_icon: str, diet_name: str, 
                 f"<span class='reason-icon'>-</span><span>{_reason}</span></div>",
                 unsafe_allow_html=True,
             )
-        if st.button(f"View Full Recipe \u2014 {_n[:32]}", key=f"chat_view_{msg_idx}_{_i}_{hash(_n)}", type="primary", use_container_width=True):
-            _check_guest_limit()
-            with st.spinner(f"Generating full recipe for {_n}\u2026"):
-                _full = expand_recipe(_n, st.session_state.intent or {}, st.session_state.ingredients or [])
-            st.session_state.current_recipe_name    = _n
-            st.session_state.current_recipe_content = _full
-            st.session_state.app_state              = "RECIPE_VIEW"
-            save_recipe(_n, _full, list(st.session_state.global_chat_messages), st.session_state.intent or {})
-            log_activity("viewed recipe", _n)
-            st.toast(f"'{_n}' opened!")
-            st.rerun()
+        _cv1, _cv2, _cv3 = st.columns([1, 2, 1])
+        with _cv2:
+            if st.button(f"View Full Recipe \u2014 {_n[:32]}", key=f"chat_view_{msg_idx}_{_i}_{hash(_n)}", type="primary"):
+                _check_guest_limit()
+                with st.spinner(f"Generating full recipe for {_n}\u2026"):
+                    _full = expand_recipe(_n, st.session_state.intent or {}, st.session_state.ingredients or [])
+                st.session_state.current_recipe_name    = _n
+                st.session_state.current_recipe_content = _full
+                st.session_state.app_state              = "RECIPE_VIEW"
+                save_recipe(_n, _full, list(st.session_state.global_chat_messages), st.session_state.intent or {})
+                log_activity("viewed recipe", _n)
+                st.toast(f"'{_n}' opened!")
+                st.rerun()
         st.markdown("")
 
 
@@ -629,7 +631,7 @@ def render_landing_chat() -> None:
     _lcc = st.columns(3, gap="small")
     for _li, (_lcol, _lchip) in enumerate(zip(_lcc, _lchips)):
         with _lcol:
-            if st.button(_lchip, key=f"landing_chip_{_li}", use_container_width=True):
+            if st.button(_lchip, key=f"landing_chip_{_li}"):
                 st.session_state.landing_pending_input = _lchip
                 st.rerun()
 
@@ -1409,6 +1411,14 @@ div[data-testid="stButton"] > button[data-qchip="1"]:hover {
     padding: 20px 22px 16px;
     margin-bottom: 12px;
 }
+.utility-panel {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+}
+.utility-panel .section-label {
+    margin-bottom: 8px;
+}
 
 /* Recipe Recommendations flex header (title left / Refresh right) */
 div[data-testid="stHorizontalBlock"]:has(.rr-header-title) {
@@ -1989,6 +1999,19 @@ if st.session_state.app_state == "VEG_SELECT":
                 "restrictions": "none",
             }
 
+    # -- Ask for a Recipe Chat (primary focus) -------------------------------
+    st.markdown(
+        "<div class='quick-ideas-box'>"
+        "<div class='section-label'>Ask Recipe AI</div>"
+        "<p style='color:#94a3b8;font-size:.82rem;margin:0 0 14px'>"
+        "Start here for personalised recipe ideas built around today\u2019s deals.</p>",
+        unsafe_allow_html=True,
+    )
+    render_landing_chat()
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.divider()
+
     # -- Recipe card grid header + Refresh button ----------------------------
     _rr_left, _rr_right = st.columns([5, 1])
     with _rr_left:
@@ -2002,7 +2025,7 @@ if st.session_state.app_state == "VEG_SELECT":
         )
     with _rr_right:
         st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
-        if st.button("\u21bb Refresh", key="home_refresh_recs", use_container_width=True):
+        if st.button("\u21bb Refresh", key="home_refresh_recs"):
             st.session_state.recommendations = []
             with st.spinner("Getting fresh recipes..."):
                 st.session_state.recommendations = generate_recommendations_with_reasons(
@@ -2013,9 +2036,10 @@ if st.session_state.app_state == "VEG_SELECT":
 
     # -- Recipe cards in 3-column grid (6 cards total) ----------------------
     _home_recs = st.session_state.recommendations or []
-    if _home_recs:
-        for _hrow_start in range(0, min(len(_home_recs), 6), 3):
-            _hrow_items = _home_recs[_hrow_start: _hrow_start + 3]
+
+    def _render_home_recs_grid(_items: list[dict], _prefix: str) -> None:
+        for _hrow_start in range(0, len(_items), 3):
+            _hrow_items = _items[_hrow_start: _hrow_start + 3]
             _hcols = st.columns(len(_hrow_items), gap="small")
             for _hci, (_hcol, _hrec) in enumerate(zip(_hcols, _hrow_items)):
                 with _hcol:
@@ -2047,138 +2071,136 @@ if st.session_state.app_state == "VEG_SELECT":
                         f"</div></div>",
                         unsafe_allow_html=True,
                     )
-                    if st.button(
-                        "View Recipe",
-                        key=f"home_card_{_hrow_start}_{_hci}",
-                        type="primary",
-                        use_container_width=True,
-                    ):
-                        _check_guest_limit()
-                        with st.spinner(f"Generating full recipe for {_hr_name}..."):
-                            _hr_full = expand_recipe(
-                                _hr_name, st.session_state.intent or {}, st.session_state.ingredients or []
-                            )
-                        st.session_state.current_recipe_name    = _hr_name
-                        st.session_state.current_recipe_content = _hr_full
-                        st.session_state.app_state              = "RECIPE_VIEW"
-                        save_recipe(_hr_name, _hr_full, list(st.session_state.global_chat_messages), st.session_state.intent or {})
-                        log_activity("viewed recipe", _hr_name)
-                        st.toast(f"Opening '{_hr_name}'...")
-                        st.rerun()
+                    _v1, _v2, _v3 = st.columns([1, 2, 1])
+                    with _v2:
+                        if st.button(
+                            "View Recipe",
+                            key=f"home_card_{_prefix}_{_hrow_start}_{_hci}",
+                            type="primary",
+                        ):
+                            _check_guest_limit()
+                            with st.spinner(f"Generating full recipe for {_hr_name}..."):
+                                _hr_full = expand_recipe(
+                                    _hr_name, st.session_state.intent or {}, st.session_state.ingredients or []
+                                )
+                            st.session_state.current_recipe_name    = _hr_name
+                            st.session_state.current_recipe_content = _hr_full
+                            st.session_state.app_state              = "RECIPE_VIEW"
+                            save_recipe(_hr_name, _hr_full, list(st.session_state.global_chat_messages), st.session_state.intent or {})
+                            log_activity("viewed recipe", _hr_name)
+                            st.toast(f"Opening '{_hr_name}'...")
+                            st.rerun()
             st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+
+    if _home_recs:
+        _render_home_recs_grid(_home_recs[:3], "top")
+        _more_recs = _home_recs[3:6]
+        if _more_recs:
+            with st.expander("Show more recommendations", expanded=False):
+                _render_home_recs_grid(_more_recs, "more")
     else:
         st.info("No recommendations yet. Click \U0001f504 Refresh to generate recipes.")
 
     st.divider()
 
-    # -- Manual ingredient table (always visible) ----------------------------
-    st.markdown(
-        "<div class='quick-ideas-box'>"
-        "<div class='section-label'>Products on Sale Today</div>"
-        "<p style='color:#94a3b8;font-size:.82rem;margin:0 0 14px'>"
-        "Tick products below to build your own recipe, or ask the chat to suggest recipes automatically.</p>",
-        unsafe_allow_html=True,
-    )
-    with st.expander("Select products for a custom recipe", expanded=True):
-        _hi = st.session_state.get("ingredients", [])
-        if not _hi:
-            with st.spinner("Loading products..."):
-                _hi = get_all_ingredients()
-                st.session_state.ingredients = _hi
-        _hf = filter_by_diet(_hi, _cur_dn)
-        if not _hf:
-            st.warning("No products found. Try refreshing in the sidebar.")
-        else:
-            import pandas as _pd2  # type: ignore
-            _hnm: dict[str, dict] = {}
-            for _hx in _hf[:40]:
-                _nn = _hx.get("name", "").strip()
-                if _nn and _nn not in _hnm:
-                    _hnm[_nn] = _hx
-            _hpre = set(st.session_state.get("manual_selected_names") or [])
-            _hrows = [
-                {
-                    "Select": _hn in _hpre,
-                    "Product": _hn,
-                    "Store": _hd.get("store", ""),
-                    "Sale Price": f"\u00a3{_hd.get('discounted_price', 0):.2f}",
-                    "Was": f"\u00a3{_hd.get('original_price', 0):.2f}",
-                    "Category": _hd.get("category", ""),
-                }
-                for _hn, _hd in sorted(_hnm.items())
-            ]
-            _hdf = _pd2.DataFrame(_hrows)
-            st.caption("Tick products to select, then generate recipes.")
-            _hedf = st.data_editor(
-                _hdf,
-                column_config={
-                    "Select": st.column_config.CheckboxColumn("Select", width="small"),
-                    "Product": st.column_config.TextColumn("Product", width="large"),
-                    "Store": st.column_config.TextColumn("Store", width="medium"),
-                    "Sale Price": st.column_config.TextColumn("Sale Price", width="small"),
-                    "Was": st.column_config.TextColumn("Was", width="small"),
-                    "Category": st.column_config.TextColumn("Category", width="medium"),
-                },
-                hide_index=True,
-                key="home_table_editor",
-                disabled=["Product", "Store", "Sale Price", "Was", "Category"],
-            )
-            _hsel = list(_hedf.loc[_hedf["Select"], "Product"])
-            st.session_state.manual_selected_names = _hsel
-            if _hsel:
-                st.success(f"**{len(_hsel)} selected:** {', '.join(_hsel[:5])}" + (" ..." if len(_hsel) > 5 else ""))
+    # -- Utility row: Products + Quick Ideas (side-by-side for cleaner layout)
+    _util_left, _util_right = st.columns([3, 2], gap="medium")
+
+    with _util_left:
+        st.markdown(
+            "<div class='quick-ideas-box utility-panel'>"
+            "<div class='section-label'>Products on Sale Today</div>"
+            "<p style='color:#94a3b8;font-size:.82rem;margin:0 0 14px'>"
+            "Tick products below to build your own recipe, or ask the chat to suggest recipes automatically.</p>",
+            unsafe_allow_html=True,
+        )
+        with st.expander("Select products for a custom recipe", expanded=False):
+            _hi = st.session_state.get("ingredients", [])
+            if not _hi:
+                with st.spinner("Loading products..."):
+                    _hi = get_all_ingredients()
+                    st.session_state.ingredients = _hi
+            _hf = filter_by_diet(_hi, _cur_dn)
+            if not _hf:
+                st.warning("No products found. Try refreshing in the sidebar.")
             else:
-                st.caption("Tick at least 2 products, then click Generate.")
-            if len(_hsel) >= 2:
-                if st.button("Generate Recipes From My Selection", type="primary", key="home_manual_gen"):
-                    _check_guest_limit()
-                    _hdicts = [_hnm[n] for n in _hsel if n in _hnm]
-                    with st.spinner("Generating recipes..."):
-                        _hmrecs = generate_recommendations_with_reasons(_cur_diet, _hdicts)
-                    st.session_state.manual_recs = _hmrecs
-                    st.session_state.recommendations = _hmrecs
-                    st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
+                import pandas as _pd2  # type: ignore
+                _hnm: dict[str, dict] = {}
+                for _hx in _hf[:40]:
+                    _nn = _hx.get("name", "").strip()
+                    if _nn and _nn not in _hnm:
+                        _hnm[_nn] = _hx
+                _hpre = set(st.session_state.get("manual_selected_names") or [])
+                _hrows = [
+                    {
+                        "Select": _hn in _hpre,
+                        "Product": _hn,
+                        "Store": _hd.get("store", ""),
+                        "Sale Price": f"\u00a3{_hd.get('discounted_price', 0):.2f}",
+                        "Was": f"\u00a3{_hd.get('original_price', 0):.2f}",
+                        "Category": _hd.get("category", ""),
+                    }
+                    for _hn, _hd in sorted(_hnm.items())
+                ]
+                _hdf = _pd2.DataFrame(_hrows)
+                st.caption("Tick products to select, then generate recipes.")
+                _hedf = st.data_editor(
+                    _hdf,
+                    column_config={
+                        "Select": st.column_config.CheckboxColumn("Select", width="small"),
+                        "Product": st.column_config.TextColumn("Product", width="large"),
+                        "Store": st.column_config.TextColumn("Store", width="medium"),
+                        "Sale Price": st.column_config.TextColumn("Sale Price", width="small"),
+                        "Was": st.column_config.TextColumn("Was", width="small"),
+                        "Category": st.column_config.TextColumn("Category", width="medium"),
+                    },
+                    hide_index=True,
+                    key="home_table_editor",
+                    disabled=["Product", "Store", "Sale Price", "Was", "Category"],
+                )
+                _hsel = list(_hedf.loc[_hedf["Select"], "Product"])
+                st.session_state.manual_selected_names = _hsel
+                if _hsel:
+                    st.success(f"**{len(_hsel)} selected:** {', '.join(_hsel[:5])}" + (" ..." if len(_hsel) > 5 else ""))
+                else:
+                    st.caption("Tick at least 2 products, then click Generate.")
+                if len(_hsel) >= 2:
+                    _g1, _g2, _g3 = st.columns([1, 2, 1])
+                    with _g2:
+                        if st.button("Generate Recipes From Selection", type="primary", key="home_manual_gen"):
+                            _check_guest_limit()
+                            _hdicts = [_hnm[n] for n in _hsel if n in _hnm]
+                            with st.spinner("Generating recipes..."):
+                                _hmrecs = generate_recommendations_with_reasons(_cur_diet, _hdicts)
+                            st.session_state.manual_recs = _hmrecs
+                            st.session_state.recommendations = _hmrecs
+                            st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
 
-    st.divider()
-
-    # -- Quick Recipe Idea chips ---------------------------------------------
-    st.markdown(
-        "<div class='quick-ideas-box'>"
-        "<div class='section-label'>Quick Recipe Ideas</div>"
-        "<p style='color:#94a3b8;font-size:.82rem;margin:0 0 14px'>"
-        "Pick a shortcut to instantly generate a recipe tailored to today\u2019s UK deals.</p>",
-        unsafe_allow_html=True,
-    )
-    _qchips = [
-        ("Veg Dinner for 4 ~\u00a315",   "Vegetarian dinner for 4 people under 15 pounds"),
-        ("Chicken Meal for 2 ~\u00a310",  "Chicken meal for 2 people under 10 pounds"),
-        ("Budget Pasta ~\u00a35",          "Cheap pasta recipe for 2 under 5 pounds"),
-        ("Healthy Soup ~\u00a36",          "Healthy vegetable soup for 4 under 6 pounds"),
-        ("Rice Bowl for 2 ~\u00a37",       "Rice bowl recipe for 2 people under 7 pounds"),
-        ("Veg Stir Fry for 4 ~\u00a39",   "Vegetarian stir fry for 4 people under 9 pounds"),
-    ]
-    _qcols = st.columns(3, gap="small")
-    for _qi, (_qlabel, _qquery) in enumerate(_qchips):
-        with _qcols[_qi % 3]:
-            if st.button(_qlabel, key=f"qchip_{_qi}", use_container_width=True):
-                st.session_state.landing_pending_input = _qquery
-                st.rerun()
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    st.divider()
-
-    # -- Ask for a Recipe Chat ------------------------------------------------
-    st.markdown(
-        "<div class='quick-ideas-box'>"
-        "<div class='section-label'>Ask for a Recipe</div>"
-        "<p style='color:#94a3b8;font-size:.82rem;margin:0 0 14px'>"
-        "Get instant recipe ideas based on today\u2019s UK deals \u2014 type anything below.</p>",
-        unsafe_allow_html=True,
-    )
-    render_landing_chat()
-    st.markdown("</div>", unsafe_allow_html=True)
-
+    with _util_right:
+        st.markdown(
+            "<div class='quick-ideas-box utility-panel'>"
+            "<div class='section-label'>Quick Recipe Ideas</div>"
+            "<p style='color:#94a3b8;font-size:.82rem;margin:0 0 14px'>"
+            "Pick a shortcut prompt when you need a faster start.</p>",
+            unsafe_allow_html=True,
+        )
+        _qchips = [
+            ("Veg Dinner for 4 ~\u00a315",   "Vegetarian dinner for 4 people under 15 pounds"),
+            ("Chicken Meal for 2 ~\u00a310",  "Chicken meal for 2 people under 10 pounds"),
+            ("Budget Pasta ~\u00a35",          "Cheap pasta recipe for 2 under 5 pounds"),
+            ("Healthy Soup ~\u00a36",          "Healthy vegetable soup for 4 under 6 pounds"),
+            ("Rice Bowl for 2 ~\u00a37",       "Rice bowl recipe for 2 people under 7 pounds"),
+            ("Veg Stir Fry for 4 ~\u00a39",   "Vegetarian stir fry for 4 people under 9 pounds"),
+        ]
+        with st.expander("Show quick prompt shortcuts", expanded=False):
+            _qcols = st.columns(1, gap="small")
+            for _qi, (_qlabel, _qquery) in enumerate(_qchips):
+                with _qcols[0]:
+                    if st.button(_qlabel, key=f"qchip_{_qi}"):
+                        st.session_state.landing_pending_input = _qquery
+                        st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
 
 # ==============================================================================
 # STATE: LOADING_RECS
@@ -2488,3 +2510,4 @@ elif st.session_state.app_state == "RECIPE_VIEW":
                 c3.markdown(f"{_icon}")
 
 
+            hc1, hc2, hc3 = st.columns([2, 3, 2])

@@ -6,6 +6,7 @@ reasoning-based RAG, risk detection, and renewal tracking.
 
 import os
 import sys
+import time
 import traceback
 import streamlit as st
 from dotenv import load_dotenv
@@ -26,6 +27,12 @@ from legal_analysis.risk_detector import RiskDetector
 from legal_analysis.renewal_detector import RenewalDetector
 from legal_analysis.page_analyzer import PageAnalyzer
 from cache.analysis_cache import AnalysisCache
+
+
+RECOMMENDED_MAX_PAGES = int(os.getenv("RECOMMENDED_MAX_PAGES", "40"))
+HARD_MAX_PAGES = int(os.getenv("HARD_MAX_PAGES", "120"))
+RECOMMENDED_MAX_UPLOAD_MB = int(os.getenv("RECOMMENDED_MAX_UPLOAD_MB", "15"))
+HARD_MAX_UPLOAD_MB = int(os.getenv("HARD_MAX_UPLOAD_MB", "30"))
 
 
 def _choose_chunk_settings(total_pages: int) -> tuple[int, int]:
@@ -91,6 +98,8 @@ def init_components():
         st.session_state.page_analyzer = PageAnalyzer(data_dir=DATA_DIR)
         st.session_state.uploaded_docs = {}  # name -> doc dict with pages, file_path
         st.session_state.cache = AnalysisCache()
+        st.session_state.doc_text_cache = {}
+        st.session_state.last_processing_metrics = []
         st.session_state.initialized = True
 
         # Restore uploaded_docs from persisted files + ChromaDB on reload
@@ -177,6 +186,26 @@ def get_loaded_docs():
     return docs
 
 
+def _get_doc_text_from_store(doc_name: str) -> str:
+    """Get reconstructed full text for one doc from ChromaDB, with session cache."""
+    text_cache = st.session_state.doc_text_cache
+    if doc_name in text_cache:
+        return text_cache[doc_name]
+
+    store = st.session_state.store
+    if not store.is_initialized():
+        return ""
+
+    collection = store._get_or_create_collection()
+    results = collection.get(where={"doc_name": doc_name}, include=["documents"])
+    if not results or not results.get("documents"):
+        return ""
+
+    combined = "\n\n".join(results["documents"])
+    text_cache[doc_name] = combined
+    return combined
+
+
 # ── Header ────────────────────────────────────────────────────────────────────
 st.markdown("""
 <div class="main-header">
@@ -195,6 +224,25 @@ with st.sidebar:
         for d in doc_list:
             st.markdown(f"- `{d}`")
     st.divider()
+
+    with st.expander("⚡ Performance Guide", expanded=False):
+        st.caption(
+            f"Recommended: ≤ {RECOMMENDED_MAX_PAGES} pages / ≤ {RECOMMENDED_MAX_UPLOAD_MB} MB per file for responsive UX."
+        )
+        st.caption(
+            f"Hard limit: {HARD_MAX_PAGES} pages / {HARD_MAX_UPLOAD_MB} MB per file."
+        )
+        st.caption("Deep analysis now runs on demand to reduce first-view waiting time.")
+
+    if st.session_state.last_processing_metrics:
+        with st.expander("⏱️ Last processing timings", expanded=False):
+            for m in st.session_state.last_processing_metrics:
+                st.markdown(
+                    f"- **{m['file']}**: {m['pages']} pages, {m['size_mb']:.2f} MB, "
+                    f"{m['chunks']} chunks, total **{m['total_s']:.1f}s** "
+                    f"(load {m['load_s']:.1f}s · clean {m['clean_s']:.1f}s · chunk {m['chunk_s']:.1f}s · "
+                    f"embed {m['embed_s']:.1f}s · index {m['index_s']:.1f}s)"
+                )
 
     # ── Global Document Selector ──────────────────────────────────────────
     st.markdown("### 📂 Active Document")
@@ -230,20 +278,45 @@ with st.sidebar:
                 _log = st.empty()
                 _logs: list = []
                 _all_chunks: list = []
+                _metrics: list = []
                 _total = len(sidebar_files)
+                _embed_s = 0.0
+                _index_s = 0.0
                 for _idx, _uf in enumerate(sidebar_files):
+                    _start_total = time.perf_counter()
                     _fname = _uf.name
+                    _size_mb = (_uf.size or 0) / (1024 * 1024)
+                    if _size_mb > HARD_MAX_UPLOAD_MB:
+                        _logs.append(f"📄 {_fname}")
+                        _logs.append(f"  ❌ File too large ({_size_mb:.1f} MB). Hard limit is {HARD_MAX_UPLOAD_MB} MB")
+                        _log.markdown("  \n".join(_logs))
+                        continue
+                    if _size_mb > RECOMMENDED_MAX_UPLOAD_MB:
+                        _logs.append(f"📄 {_fname}")
+                        _logs.append(f"  ⚠️ {_size_mb:.1f} MB may be slow; recommended max is {RECOMMENDED_MAX_UPLOAD_MB} MB")
                     _logs.append(f"📄 {_fname}")
                     _log.markdown("  \n".join(_logs))
                     _tmp = os.path.join("uploads", _fname)
                     os.makedirs("uploads", exist_ok=True)
                     with open(_tmp, "wb") as _f:
                         _f.write(_uf.getbuffer())
+                    _t0 = time.perf_counter()
                     _doc = st.session_state.loader.load_file(_tmp)
+                    _load_s = time.perf_counter() - _t0
                     if _doc is None:
                         _logs.append(f"  ❌ Could not extract text")
                         continue
+                    _pages = _doc.get("total_pages", 1)
+                    if _pages > HARD_MAX_PAGES:
+                        _logs.append(f"  ❌ {_pages} pages exceeds hard limit ({HARD_MAX_PAGES}).")
+                        _log.markdown("  \n".join(_logs))
+                        continue
+                    if _pages > RECOMMENDED_MAX_PAGES:
+                        _logs.append(f"  ⚠️ {_pages} pages may be slow; recommended max is {RECOMMENDED_MAX_PAGES}.")
+
+                    _t1 = time.perf_counter()
                     _cleaned = st.session_state.cleaner.clean_document(_doc)
+                    _clean_s = time.perf_counter() - _t1
                     _cleaned["pages"] = _doc.get("pages", [])
                     _cleaned["total_pages"] = _doc.get("total_pages", 1)
                     _cleaned["file_path"] = _tmp
@@ -253,9 +326,13 @@ with st.sidebar:
                         chunk_overlap=_chunk_overlap,
                         output_dir="data",
                     )
+                    _t2 = time.perf_counter()
                     _chunks = _fast_chunker.chunk_document(_cleaned)
+                    _chunk_s = time.perf_counter() - _t2
                     _logs.append(f"  ✔️ {len(_chunks)} chunks from {_cleaned.get('total_pages', 1)} pages")
                     st.session_state.store.delete_document(_cleaned["name"])
+                    st.session_state.cache.delete_doc(_cleaned["name"])
+                    st.session_state.doc_text_cache.pop(_cleaned["name"], None)
                     _all_chunks.extend(_chunks)
                     with open(_tmp, "rb") as _fb:
                         _fbytes = _fb.read()
@@ -268,12 +345,34 @@ with st.sidebar:
                         "file_bytes": _fbytes,
                         "file_name": _fname,
                     }
+                    _metrics.append({
+                        "file": _fname,
+                        "pages": _cleaned.get("total_pages", 1),
+                        "size_mb": _size_mb,
+                        "chunks": len(_chunks),
+                        "load_s": _load_s,
+                        "clean_s": _clean_s,
+                        "chunk_s": _chunk_s,
+                        "embed_s": 0.0,
+                        "index_s": 0.0,
+                        "total_s": time.perf_counter() - _start_total,
+                    })
                     _progress.progress((_idx + 1) / _total, text=f"{_idx+1}/{_total}")
                     _log.markdown("  \n".join(_logs))
                 if _all_chunks:
+                    _te = time.perf_counter()
                     _embeddings = st.session_state.embed.embed_chunks(_all_chunks)
+                    _embed_s = time.perf_counter() - _te
+                    _ti = time.perf_counter()
                     st.session_state.store.add_document_chunks(_embeddings, _all_chunks)
+                    _index_s = time.perf_counter() - _ti
+                    for _m in _metrics:
+                        _m["embed_s"] = _embed_s / max(len(_metrics), 1)
+                        _m["index_s"] = _index_s / max(len(_metrics), 1)
+                        _m["total_s"] = _m["load_s"] + _m["clean_s"] + _m["chunk_s"] + _m["embed_s"] + _m["index_s"]
+                    st.session_state.last_processing_metrics = _metrics
                     _logs.append("✅ Indexed!")
+                    _logs.append(f"⏱️ Embedding: {_embed_s:.1f}s · Indexing: {_index_s:.1f}s")
                     _log.markdown("  \n".join(_logs))
                     _progress.progress(1.0, text="Done!")
                     st.rerun()
@@ -306,20 +405,37 @@ def _content_hash(doc_name: str) -> str:
 
 def precompute_for_doc(doc_name: str):
     """Run all analysis features for a document and cache the results."""
+    return precompute_for_doc_mode(doc_name, include_deep=True)
+
+
+def precompute_for_doc_mode(doc_name: str, include_deep: bool = False):
+    """Run summary/renewal first; optionally include deep page/risk analysis."""
     cache = st.session_state.cache
     ch = _content_hash(doc_name)
+    full_text = _get_doc_text_from_store(doc_name)
+    title = st.session_state.uploaded_docs.get(doc_name, {}).get("title", doc_name)
+
+    if not full_text:
+        return
 
     # --- Summary ---
     if cache.get(doc_name, "summary", ch) is None:
-        docs = get_loaded_docs()
-        target = [d for d in docs if d["name"] == doc_name]
-        if target:
-            section_sums = st.session_state.section_sum.summarize_all_docs(documents=target)
-            exec_result = st.session_state.exec_sum.generate_executive_summary(section_sums)
-            cache.put(doc_name, "summary", {
-                "executive": exec_result.get("summary", "N/A"),
-                "sections": section_sums,
-            }, ch)
+        section_sums = st.session_state.section_sum.summarize_all_docs(
+            documents=[{"name": doc_name, "title": title, "content": full_text, "url": ""}]
+        )
+        exec_result = st.session_state.exec_sum.generate_executive_summary(section_sums)
+        cache.put(doc_name, "summary", {
+            "executive": exec_result.get("summary", "N/A"),
+            "sections": section_sums,
+        }, ch)
+
+    # --- Renewal Detection ---
+    if cache.get(doc_name, "renewal", ch) is None:
+        result = st.session_state.renewal_detector.detect_renewals(full_text, doc_name)
+        cache.put(doc_name, "renewal", result, ch)
+
+    if not include_deep:
+        return
 
     # --- Page Analysis ---
     if cache.get(doc_name, "page_analysis", ch) is None:
@@ -331,11 +447,8 @@ def precompute_for_doc(doc_name: str):
 
     # --- Risk Detection ---
     if cache.get(doc_name, "risk", ch) is None:
-        docs = get_loaded_docs()
-        target = [d for d in docs if d["name"] == doc_name]
-        if target:
-            result = st.session_state.risk_detector.detect_risks(target[0]["content"], doc_name)
-            cache.put(doc_name, "risk", result, ch)
+        result = st.session_state.risk_detector.detect_risks(full_text, doc_name)
+        cache.put(doc_name, "risk", result, ch)
 
     # --- Page-by-Page Risk ---
     if cache.get(doc_name, "risk_pages", ch) is None:
@@ -345,23 +458,18 @@ def precompute_for_doc(doc_name: str):
             results = st.session_state.risk_detector.detect_page_risks(pages, doc_name)
             cache.put(doc_name, "risk_pages", results, ch)
 
-    # --- Renewal Detection ---
-    if cache.get(doc_name, "renewal", ch) is None:
-        docs = get_loaded_docs()
-        target = [d for d in docs if d["name"] == doc_name]
-        if target:
-            result = st.session_state.renewal_detector.detect_renewals(target[0]["content"], doc_name)
-            cache.put(doc_name, "renewal", result, ch)
-
 
 # Auto-trigger precompute when a specific document is selected
 sel_doc = st.session_state.get("selected_doc")
 if sel_doc and sel_doc != "All Documents" and sel_doc in st.session_state.uploaded_docs:
     ch = _content_hash(sel_doc)
-    needs_compute = st.session_state.cache.get(sel_doc, "summary", ch) is None
+    needs_compute = (
+        st.session_state.cache.get(sel_doc, "summary", ch) is None
+        or st.session_state.cache.get(sel_doc, "renewal", ch) is None
+    )
     if needs_compute:
-        with st.spinner(f"⚙️ Analyzing **{sel_doc}** (first time only — results will be cached) ..."):
-            precompute_for_doc(sel_doc)
+        with st.spinner(f"⚙️ Preparing overview for **{sel_doc}** (summary + renewals)..."):
+            precompute_for_doc_mode(sel_doc, include_deep=False)
         st.rerun()  # refresh so tabs render cached data
 
 # ── Main area ─────────────────────────────────────────────────────────────────
@@ -426,7 +534,11 @@ else:
             page_cached = st.session_state.cache.get(sel, "page_analysis", ch)
             
             if risk_cached is None or page_cached is None:
-                st.info("Deep analysis is being prepared — please wait...")
+                st.info("Deep analysis isn't precomputed by default to keep the app responsive.")
+                if st.button("⚡ Run Deep Analysis Now", key="run_deep_analysis_btn", type="primary"):
+                    with st.spinner(f"Running deep analysis for {sel}..."):
+                        precompute_for_doc_mode(sel, include_deep=True)
+                    st.rerun()
             else:
                 st.subheader("⚠️ High-Level Legal Risks")
                 risks = risk_cached.get("risks", [])
