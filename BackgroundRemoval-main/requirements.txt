@@ -1,0 +1,4 @@
+rembg==2.0.55
+Pillow==11.1.0
+numpy
+streamlit-image-comparison
