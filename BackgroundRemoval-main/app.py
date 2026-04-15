@@ -6,9 +6,24 @@ st.write("Sys path:", sys.path)
 print(sys.path)
 print(sys.executable)
 
+import importlib
+
+try:
+    import rembg
+    print("rembg imported OK")
+except Exception as e:
+    print("rembg failed:", e)
+
+# test critical deps
+for pkg in ["onnxruntime", "cv2", "numpy", "pymatting"]:
+    try:
+        importlib.import_module(pkg)
+        print(pkg, "OK")
+    except Exception as e:
+        print(pkg, "FAIL:", e)
+        
 from PIL import Image, ImageOps
 import streamlit as st
-from rembg import remove
 import numpy as np
 from io import BytesIO
 import base64
