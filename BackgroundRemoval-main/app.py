@@ -6,9 +6,9 @@ st.write("Sys path:", sys.path)
 print(sys.path)
 print(sys.executable)
 
+from PIL import Image, ImageOps
 import streamlit as st
 from rembg import remove
-from PIL import Image, ImageOps
 import numpy as np
 from io import BytesIO
 import base64
