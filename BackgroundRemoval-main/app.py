@@ -1,3 +1,11 @@
+import sys
+import streamlit as st
+
+st.write("Python executable:", sys.executable)
+st.write("Sys path:", sys.path)
+print(sys.path)
+print(sys.executable)
+
 import streamlit as st
 from rembg import remove
 from PIL import Image, ImageOps
