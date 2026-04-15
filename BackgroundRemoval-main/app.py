@@ -21,7 +21,8 @@ for pkg in ["onnxruntime", "cv2", "numpy", "pymatting"]:
         print(pkg, "OK")
     except Exception as e:
         print(pkg, "FAIL:", e)
-        
+
+import rembg
 from PIL import Image, ImageOps
 import streamlit as st
 import numpy as np
