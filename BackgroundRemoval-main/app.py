@@ -1,5 +1,6 @@
 import sys
 import streamlit as st
+import supabase
 
 st.write("Python executable:", sys.executable)
 st.write("Sys path:", sys.path)
