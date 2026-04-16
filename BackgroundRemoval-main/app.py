@@ -6,7 +6,7 @@ import base64
 import os
 import traceback
 import time
-import rembg
+from rembg import remove 
 
 try:
     from streamlit_image_comparison import image_comparison
