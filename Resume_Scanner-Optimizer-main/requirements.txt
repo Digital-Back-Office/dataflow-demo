@@ -1,0 +1,14 @@
+streamlit
+pdfplumber
+python-docx
+spacy
+nltk
+scikit-learn
+pandas
+numpy
+requests
+beautifulsoup4
+groq
+openai
+regex
+plotly

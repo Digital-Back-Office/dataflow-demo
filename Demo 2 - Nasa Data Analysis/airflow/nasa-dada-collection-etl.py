@@ -3,6 +3,7 @@ from airflow import DAG
 from airflow.models import Variable
 from airflow.operators.python import PythonOperator
 from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
+from airflow.hooks.base import BaseHook
 import pandas as pd
 import json
 import logging
@@ -31,6 +32,16 @@ dag = DAG(
     max_active_runs=1,
     tags=['etl', 'nasa', 'space', 'daily']
 )
+
+
+def normalize_db_type(conn_type: str) -> str:
+    """Normalize Airflow connection types to supported values."""
+    conn_type = (conn_type or '').lower()
+    if conn_type.startswith('postgres'):
+        return 'postgres'
+    if conn_type.startswith('sqlite'):
+        return 'sqlite'
+    return conn_type
 
 def fetch_apod_data(**context):
     """
@@ -335,12 +346,15 @@ def prepare_apod_insert_query(**context):
     with proper error handling and deduplication based on date
     """
     try:
+        conn = BaseHook.get_connection(DB_CONN_ID)
+        db_type = normalize_db_type(conn.conn_type)
+        
         task_instance = context['task_instance']
         apod_data = task_instance.xcom_pull(task_ids='fetch_apod_data')
         
         if not apod_data:
             logging.warning("No APOD data received from fetch task")
-            return "SELECT 1;"
+            return ["SELECT 1;"]
         
         records = json.loads(apod_data)
         
@@ -350,9 +364,14 @@ def prepare_apod_insert_query(**context):
             
         if not records:
             logging.warning("Empty APOD records list")
-            return "SELECT 1;"
+            return ["SELECT 1;"]
         
-        logging.info(f"Preparing APOD inserts for {len(records)} records")
+        # Limit records for SQLite to reduce insert time
+        if db_type == 'sqlite':
+            print("Limiting APOD records to 5 for SQLite to avoid long insert times")
+            records = records[:5]
+        
+        logging.info(f"Preparing APOD inserts for {len(records)} records on {db_type}")
         
         def escape_sql_string(value):
             if value is None:
@@ -373,30 +392,49 @@ def prepare_apod_insert_query(**context):
                 service_version_val = escape_sql_string(data.get('service_version', ''))
                 created_at_val = escape_sql_string(data.get('created_at', datetime.now().isoformat()))
                 
-                insert_sql = f"""
-                INSERT INTO apod_images (
-                    date, title, explanation, url, media_type, hdurl, copyright, service_version, created_at
-                ) VALUES (
-                    '{date_val}',
-                    '{title_val}',
-                    '{explanation_val}',
-                    '{url_val}',
-                    '{media_type_val}',
-                    '{hdurl_val}',
-                    '{copyright_val}',
-                    '{service_version_val}',
-                    '{created_at_val}'
-                )
-                ON CONFLICT (date) 
-                DO UPDATE SET
-                    title = EXCLUDED.title,
-                    explanation = EXCLUDED.explanation,
-                    url = EXCLUDED.url,
-                    media_type = EXCLUDED.media_type,
-                    hdurl = EXCLUDED.hdurl,
-                    copyright = EXCLUDED.copyright,
-                    service_version = EXCLUDED.service_version;
-                """
+                if db_type == 'postgres':
+                    print(f"Preparing upsert for APOD record {i+1}/{len(records)}: {date_val} - {title_val[:30]}...")
+                    insert_sql = f"""
+                    INSERT INTO apod_images (
+                        date, title, explanation, url, media_type, hdurl, copyright, service_version, created_at
+                    ) VALUES (
+                        '{date_val}',
+                        '{title_val}',
+                        '{explanation_val}',
+                        '{url_val}',
+                        '{media_type_val}',
+                        '{hdurl_val}',
+                        '{copyright_val}',
+                        '{service_version_val}',
+                        '{created_at_val}'
+                    )
+                    ON CONFLICT (date) 
+                    DO UPDATE SET
+                        title = EXCLUDED.title,
+                        explanation = EXCLUDED.explanation,
+                        url = EXCLUDED.url,
+                        media_type = EXCLUDED.media_type,
+                        hdurl = EXCLUDED.hdurl,
+                        copyright = EXCLUDED.copyright,
+                        service_version = EXCLUDED.service_version;
+                    """
+                else:  # sqlite
+                    print(f"db type is sqlite, preparing insert (will replace existing record with same date if exists) for APOD record {i+1}/{len(records)}: {date_val} - {title_val[:30]}...")
+                    insert_sql = f"""
+                    INSERT OR REPLACE INTO apod_images (
+                        date, title, explanation, url, media_type, hdurl, copyright, service_version, created_at
+                    ) VALUES (
+                        '{date_val}',
+                        '{title_val}',
+                        '{explanation_val}',
+                        '{url_val}',
+                        '{media_type_val}',
+                        '{hdurl_val}',
+                        '{copyright_val}',
+                        '{service_version_val}',
+                        '{created_at_val}'
+                    );
+                    """
                 
                 insert_statements.append(insert_sql)
                 
@@ -407,11 +445,10 @@ def prepare_apod_insert_query(**context):
         
         if not insert_statements:
             logging.warning("No valid APOD records to insert")
-            return "SELECT 1;"
+            return ["SELECT 1;"]
             
-        final_sql = "\n".join(insert_statements)
         logging.info(f"APOD upsert query prepared with {len(insert_statements)} records (will insert new or update existing)")
-        return final_sql
+        return insert_statements
         
     except Exception as e:
         logging.error(f"Error preparing APOD insert query: {str(e)}")
@@ -424,12 +461,15 @@ def prepare_iss_insert_query(**context):
     with proper error handling and deduplication based on timestamp
     """
     try:
+        conn = BaseHook.get_connection(DB_CONN_ID)
+        db_type = normalize_db_type(conn.conn_type)
+        
         task_instance = context['task_instance']
         iss_data = task_instance.xcom_pull(task_ids='fetch_iss_location')
         
         if not iss_data:
             logging.warning("No ISS data received from fetch task")
-            return "SELECT 1;"
+            return ["SELECT 1;"]
         
         records = json.loads(iss_data)
         
@@ -439,25 +479,30 @@ def prepare_iss_insert_query(**context):
             
         if not records:
             logging.warning("Empty ISS records list")
-            return "SELECT 1;"
+            return ["SELECT 1;"]
         
-        logging.info(f"Preparing ISS insert for {len(records)} data points")
+        # Limit records for SQLite
+        if db_type == 'sqlite':
+            records = records[:10]  # Allow more for ISS as it's frequent
+        
+        logging.info(f"Preparing ISS insert for {len(records)} data points on {db_type}")
         
         insert_statements = []
         
-        column_check_sql = """
-        DO $$
-        BEGIN
-            IF NOT EXISTS (
-                SELECT 1 
-                FROM information_schema.columns 
-                WHERE table_name='iss_location' AND column_name='is_interpolated'
-            ) THEN
-                ALTER TABLE iss_location ADD COLUMN is_interpolated BOOLEAN DEFAULT FALSE;
-            END IF;
-        END $$;
-        """
-        insert_statements.append(column_check_sql)
+        if db_type == 'postgres':
+            column_check_sql = """
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 
+                    FROM information_schema.columns 
+                    WHERE table_name='iss_location' AND column_name='is_interpolated'
+                ) THEN
+                    ALTER TABLE iss_location ADD COLUMN is_interpolated BOOLEAN DEFAULT FALSE;
+                END IF;
+            END $$;
+            """
+            insert_statements.append(column_check_sql)
         
         for i, data in enumerate(records):
             try:
@@ -469,29 +514,45 @@ def prepare_iss_insert_query(**context):
                 timestamp_val = str(data.get('timestamp', '')).replace("'", "''")
                 created_at_val = str(data.get('created_at', datetime.now().isoformat())).replace("'", "''")
                 
-                is_interpolated = bool(data.get('is_interpolated', False))
+                is_interpolated = 1 if bool(data.get('is_interpolated', False)) else 0
                 
-                insert_sql = f"""
-                INSERT INTO iss_location (
-                    timestamp, latitude, longitude, altitude, velocity, created_at, 
-                    is_interpolated
-                ) VALUES (
-                    '{timestamp_val}',
-                    {latitude},
-                    {longitude},
-                    {altitude},
-                    {velocity},
-                    '{created_at_val}',
-                    {is_interpolated}
-                )
-                ON CONFLICT (timestamp) 
-                DO UPDATE SET
-                    latitude = EXCLUDED.latitude,
-                    longitude = EXCLUDED.longitude,
-                    altitude = EXCLUDED.altitude,
-                    velocity = EXCLUDED.velocity,
-                    is_interpolated = EXCLUDED.is_interpolated;
-                """
+                if db_type == 'postgres':
+                    insert_sql = f"""
+                    INSERT INTO iss_location (
+                        timestamp, latitude, longitude, altitude, velocity, created_at, 
+                        is_interpolated
+                    ) VALUES (
+                        '{timestamp_val}',
+                        {latitude},
+                        {longitude},
+                        {altitude},
+                        {velocity},
+                        '{created_at_val}',
+                        {is_interpolated}
+                    )
+                    ON CONFLICT (timestamp) 
+                    DO UPDATE SET
+                        latitude = EXCLUDED.latitude,
+                        longitude = EXCLUDED.longitude,
+                        altitude = EXCLUDED.altitude,
+                        velocity = EXCLUDED.velocity,
+                        is_interpolated = EXCLUDED.is_interpolated;
+                    """
+                else:  # sqlite
+                    insert_sql = f"""
+                    INSERT OR REPLACE INTO iss_location (
+                        timestamp, latitude, longitude, altitude, velocity, created_at, 
+                        is_interpolated
+                    ) VALUES (
+                        '{timestamp_val}',
+                        {latitude},
+                        {longitude},
+                        {altitude},
+                        {velocity},
+                        '{created_at_val}',
+                        {is_interpolated}
+                    );
+                    """
                 insert_statements.append(insert_sql)
                 
             except Exception as record_error:
@@ -499,13 +560,12 @@ def prepare_iss_insert_query(**context):
                 logging.error(f"Problematic record: {data}")
                 continue
         
-        if len(insert_statements) <= 1:
+        if len(insert_statements) <= (1 if db_type == 'postgres' else 0):
             logging.warning("No valid ISS records to insert")
-            return "SELECT 1;"
+            return ["SELECT 1;"]
             
-        final_sql = "\n".join(insert_statements)
-        logging.info(f"ISS upsert query prepared with {len(insert_statements)-1} records")
-        return final_sql
+        logging.info(f"ISS upsert query prepared with {len(insert_statements) - (1 if db_type == 'postgres' else 0)} records")
+        return insert_statements
         
     except Exception as e:
         logging.error(f"Error preparing ISS insert query: {str(e)}")
@@ -518,20 +578,27 @@ def prepare_asteroids_insert_query(**context):
     with proper error handling and deduplication based on neo_id and approach_date
     """
     try:
+        conn = BaseHook.get_connection(DB_CONN_ID)
+        db_type = normalize_db_type(conn.conn_type)
+        
         task_instance = context['task_instance']
         asteroid_data = task_instance.xcom_pull(task_ids='fetch_asteroid_data')
         
         if not asteroid_data:
             logging.warning("No asteroid data received from fetch task")
-            return "SELECT 1;"
+            return ["SELECT 1;"]
         
         data = json.loads(asteroid_data)
         
         if not data:
             logging.info("No asteroids found for this date")
-            return "SELECT 1;"
+            return ["SELECT 1;"]
         
-        logging.info(f"Preparing asteroid inserts for {len(data)} records")
+        # Limit records for SQLite
+        if db_type == 'sqlite':
+            data = data[:5]
+        
+        logging.info(f"Preparing asteroid inserts for {len(data)} records on {db_type}")
         
         def escape_sql_string(value):
             if value is None:
@@ -545,7 +612,7 @@ def prepare_asteroids_insert_query(**context):
                 return default
         
         def safe_bool(value):
-            return bool(value) if value is not None else False
+            return 1 if bool(value) else 0
         
         insert_statements = []
         
@@ -564,35 +631,57 @@ def prepare_asteroids_insert_query(**context):
                 orbiting_body = escape_sql_string(record.get('orbiting_body', 'Earth'))
                 created_at = escape_sql_string(record.get('created_at', datetime.now().isoformat()))
                 
-                insert_sql = f"""
-                INSERT INTO asteroids (
-                    neo_id, name, approach_date, estimated_diameter_min, estimated_diameter_max,
-                    relative_velocity, miss_distance, is_potentially_hazardous, absolute_magnitude,
-                    nasa_jpl_url, orbiting_body, created_at
-                ) VALUES (
-                    '{neo_id}',
-                    '{name}',
-                    '{approach_date}',
-                    {estimated_diameter_min},
-                    {estimated_diameter_max},
-                    {relative_velocity},
-                    {miss_distance},
-                    {is_potentially_hazardous},
-                    {absolute_magnitude},
-                    '{nasa_jpl_url}',
-                    '{orbiting_body}',
-                    '{created_at}'
-                )
-                ON CONFLICT (neo_id, approach_date) 
-                DO UPDATE SET
-                    name = EXCLUDED.name,
-                    estimated_diameter_min = EXCLUDED.estimated_diameter_min,
-                    estimated_diameter_max = EXCLUDED.estimated_diameter_max,
-                    relative_velocity = EXCLUDED.relative_velocity,
-                    miss_distance = EXCLUDED.miss_distance,
-                    is_potentially_hazardous = EXCLUDED.is_potentially_hazardous,
-                    absolute_magnitude = EXCLUDED.absolute_magnitude;
-                """
+                if db_type == 'postgres':
+                    insert_sql = f"""
+                    INSERT INTO asteroids (
+                        neo_id, name, approach_date, estimated_diameter_min, estimated_diameter_max,
+                        relative_velocity, miss_distance, is_potentially_hazardous, absolute_magnitude,
+                        nasa_jpl_url, orbiting_body, created_at
+                    ) VALUES (
+                        '{neo_id}',
+                        '{name}',
+                        '{approach_date}',
+                        {estimated_diameter_min},
+                        {estimated_diameter_max},
+                        {relative_velocity},
+                        {miss_distance},
+                        {is_potentially_hazardous},
+                        {absolute_magnitude},
+                        '{nasa_jpl_url}',
+                        '{orbiting_body}',
+                        '{created_at}'
+                    )
+                    ON CONFLICT (neo_id, approach_date) 
+                    DO UPDATE SET
+                        name = EXCLUDED.name,
+                        estimated_diameter_min = EXCLUDED.estimated_diameter_min,
+                        estimated_diameter_max = EXCLUDED.estimated_diameter_max,
+                        relative_velocity = EXCLUDED.relative_velocity,
+                        miss_distance = EXCLUDED.miss_distance,
+                        is_potentially_hazardous = EXCLUDED.is_potentially_hazardous,
+                        absolute_magnitude = EXCLUDED.absolute_magnitude;
+                    """
+                else:  # sqlite
+                    insert_sql = f"""
+                    INSERT OR REPLACE INTO asteroids (
+                        neo_id, name, approach_date, estimated_diameter_min, estimated_diameter_max,
+                        relative_velocity, miss_distance, is_potentially_hazardous, absolute_magnitude,
+                        nasa_jpl_url, orbiting_body, created_at
+                    ) VALUES (
+                        '{neo_id}',
+                        '{name}',
+                        '{approach_date}',
+                        {estimated_diameter_min},
+                        {estimated_diameter_max},
+                        {relative_velocity},
+                        {miss_distance},
+                        {is_potentially_hazardous},
+                        {absolute_magnitude},
+                        '{nasa_jpl_url}',
+                        '{orbiting_body}',
+                        '{created_at}'
+                    );
+                    """
                 insert_statements.append(insert_sql)
                 
             except Exception as record_error:
@@ -602,11 +691,10 @@ def prepare_asteroids_insert_query(**context):
         
         if not insert_statements:
             logging.warning("No valid asteroid records to insert")
-            return "SELECT 1;"
+            return ["SELECT 1;"]
         
-        final_sql = "\n".join(insert_statements)
         logging.info(f"Asteroid upsert query prepared with {len(insert_statements)} records (will insert new or update existing)")
-        return final_sql
+        return insert_statements
         
     except Exception as e:
         logging.error(f"Error preparing asteroid insert query: {str(e)}")
@@ -619,20 +707,27 @@ def prepare_missions_insert_query(**context):
     with proper error handling and deduplication based on mission_id
     """
     try:
+        conn = BaseHook.get_connection(DB_CONN_ID)
+        db_type = normalize_db_type(conn.conn_type)
+        
         task_instance = context['task_instance']
         missions_data = task_instance.xcom_pull(task_ids='fetch_space_missions')
         
         if not missions_data:
             logging.warning("No missions data received from fetch task")
-            return "SELECT 1;"
+            return ["SELECT 1;"]
         
         data = json.loads(missions_data)
         
         if not data:
             logging.info("No missions found for this timeframe")
-            return "SELECT 1;"
+            return ["SELECT 1;"]
         
-        logging.info(f"Preparing mission inserts for {len(data)} records")
+        # Limit records for SQLite
+        if db_type == 'sqlite':
+            data = data[:5]
+        
+        logging.info(f"Preparing mission inserts for {len(data)} records on {db_type}")
         
         def escape_sql_string(value):
             if value is None:
@@ -646,7 +741,7 @@ def prepare_missions_insert_query(**context):
                 return default
         
         def safe_bool(value):
-            return bool(value) if value is not None else False
+            return 1 if bool(value) else 0
         
         insert_statements = []
         
@@ -666,40 +761,63 @@ def prepare_missions_insert_query(**context):
                 mission_description = escape_sql_string(record.get('mission_description', ''))[:1000]
                 created_at = escape_sql_string(record.get('created_at', datetime.now().isoformat()))
                 
-                insert_sql = f"""
-                INSERT INTO space_missions (
-                    mission_id, name, launch_date, rocket_name, mission_type, launch_location,
-                    status, probability, launch_service_provider, image_url, webcast_live,
-                    mission_description, created_at
-                ) VALUES (
-                    '{mission_id}',
-                    '{name}',
-                    '{launch_date}',
-                    '{rocket_name}',
-                    '{mission_type}',
-                    '{launch_location}',
-                    '{status}',
-                    {probability},
-                    '{launch_service_provider}',
-                    '{image_url}',
-                    {webcast_live},
-                    '{mission_description}',
-                    '{created_at}'
-                )
-                ON CONFLICT (mission_id) 
-                DO UPDATE SET
-                    name = EXCLUDED.name,
-                    launch_date = EXCLUDED.launch_date,
-                    rocket_name = EXCLUDED.rocket_name,
-                    mission_type = EXCLUDED.mission_type,
-                    launch_location = EXCLUDED.launch_location,
-                    status = EXCLUDED.status,
-                    probability = EXCLUDED.probability,
-                    launch_service_provider = EXCLUDED.launch_service_provider,
-                    image_url = EXCLUDED.image_url,
-                    webcast_live = EXCLUDED.webcast_live,
-                    mission_description = EXCLUDED.mission_description;
-                """
+                if db_type == 'postgres':
+                    insert_sql = f"""
+                    INSERT INTO space_missions (
+                        mission_id, name, launch_date, rocket_name, mission_type, launch_location,
+                        status, probability, launch_service_provider, image_url, webcast_live,
+                        mission_description, created_at
+                    ) VALUES (
+                        '{mission_id}',
+                        '{name}',
+                        '{launch_date}',
+                        '{rocket_name}',
+                        '{mission_type}',
+                        '{launch_location}',
+                        '{status}',
+                        {probability},
+                        '{launch_service_provider}',
+                        '{image_url}',
+                        {webcast_live},
+                        '{mission_description}',
+                        '{created_at}'
+                    )
+                    ON CONFLICT (mission_id) 
+                    DO UPDATE SET
+                        name = EXCLUDED.name,
+                        launch_date = EXCLUDED.launch_date,
+                        rocket_name = EXCLUDED.rocket_name,
+                        mission_type = EXCLUDED.mission_type,
+                        launch_location = EXCLUDED.launch_location,
+                        status = EXCLUDED.status,
+                        probability = EXCLUDED.probability,
+                        launch_service_provider = EXCLUDED.launch_service_provider,
+                        image_url = EXCLUDED.image_url,
+                        webcast_live = EXCLUDED.webcast_live,
+                        mission_description = EXCLUDED.mission_description;
+                    """
+                else:  # sqlite
+                    insert_sql = f"""
+                    INSERT OR REPLACE INTO space_missions (
+                        mission_id, name, launch_date, rocket_name, mission_type, launch_location,
+                        status, probability, launch_service_provider, image_url, webcast_live,
+                        mission_description, created_at
+                    ) VALUES (
+                        '{mission_id}',
+                        '{name}',
+                        '{launch_date}',
+                        '{rocket_name}',
+                        '{mission_type}',
+                        '{launch_location}',
+                        '{status}',
+                        {probability},
+                        '{launch_service_provider}',
+                        '{image_url}',
+                        {webcast_live},
+                        '{mission_description}',
+                        '{created_at}'
+                    );
+                    """
                 insert_statements.append(insert_sql)
                 
             except Exception as record_error:
@@ -709,11 +827,10 @@ def prepare_missions_insert_query(**context):
         
         if not insert_statements:
             logging.warning("No valid mission records to insert")
-            return "SELECT 1;"
+            return ["SELECT 1;"]
         
-        final_sql = "\n".join(insert_statements)
         logging.info(f"Mission upsert query prepared with {len(insert_statements)} records (will insert new or update existing)")
-        return final_sql
+        return insert_statements
         
     except Exception as e:
         logging.error(f"Error preparing mission insert query: {str(e)}")
@@ -721,98 +838,115 @@ def prepare_missions_insert_query(**context):
         raise
 
 # Task 1: Create all necessary tables
-create_tables = SQLExecuteQueryOperator(
+def create_tables_if_not_exist(**context):
+    """
+    Create database tables if they don't exist, with database-specific syntax
+    """
+    try:
+        conn = BaseHook.get_connection(DB_CONN_ID)
+        db_type = normalize_db_type(conn.conn_type)
+        
+        logging.info(f"Creating tables for database type: {db_type}")
+        
+        # Define table creation SQL based on database type
+        if db_type == 'sqlite':
+            id_column = "INTEGER PRIMARY KEY AUTOINCREMENT"
+            if_not_exists = "IF NOT EXISTS"
+        elif db_type == 'postgres':
+            id_column = "SERIAL PRIMARY KEY"
+            if_not_exists = "IF NOT EXISTS"
+        else:
+            raise ValueError(f"Unsupported database type: {db_type}")
+        
+        create_table_sqls = [
+            f"""
+            CREATE TABLE {if_not_exists} apod_images (
+                id {id_column},
+                date DATE UNIQUE NOT NULL,
+                title VARCHAR(500),
+                explanation TEXT,
+                url TEXT,
+                media_type VARCHAR(50),
+                hdurl TEXT,
+                copyright VARCHAR(200),
+                service_version VARCHAR(20),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """,
+            f"""
+            CREATE TABLE {if_not_exists} iss_location (
+                id {id_column},
+                timestamp TIMESTAMP NOT NULL UNIQUE,
+                latitude DECIMAL(10,6),
+                longitude DECIMAL(10,6),
+                altitude DECIMAL(10,2),
+                velocity DECIMAL(10,2),
+                is_interpolated INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """,
+            f"""
+            CREATE TABLE {if_not_exists} asteroids (
+                id {id_column},
+                neo_id VARCHAR(50),
+                name VARCHAR(200),
+                approach_date DATE,
+                estimated_diameter_min DECIMAL(15,6),
+                estimated_diameter_max DECIMAL(15,6),
+                relative_velocity DECIMAL(15,2),
+                miss_distance DECIMAL(20,2),
+                is_potentially_hazardous INTEGER,
+                absolute_magnitude DECIMAL(8,2),
+                nasa_jpl_url TEXT,
+                orbiting_body VARCHAR(50),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(neo_id, approach_date)
+            );
+            """,
+            f"""
+            CREATE TABLE {if_not_exists} space_missions (
+                id {id_column},
+                mission_id VARCHAR(50) UNIQUE,
+                name VARCHAR(300),
+                launch_date TIMESTAMP,
+                rocket_name VARCHAR(200),
+                mission_type VARCHAR(100),
+                launch_location VARCHAR(200),
+                status VARCHAR(50),
+                probability INTEGER,
+                launch_service_provider VARCHAR(200),
+                image_url TEXT,
+                webcast_live INTEGER,
+                mission_description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_apod_date ON apod_images(date);",
+            "CREATE INDEX IF NOT EXISTS idx_iss_timestamp ON iss_location(timestamp);",
+            "CREATE INDEX IF NOT EXISTS idx_asteroids_approach_date ON asteroids(approach_date);",
+            "CREATE INDEX IF NOT EXISTS idx_asteroids_hazardous ON asteroids(is_potentially_hazardous);",
+            "CREATE INDEX IF NOT EXISTS idx_missions_launch_date ON space_missions(launch_date);",
+            "CREATE INDEX IF NOT EXISTS idx_missions_status ON space_missions(status);"
+        ]
+        
+        # Execute the table creation statements
+        hook = BaseHook.get_hook(conn_id=DB_CONN_ID)
+        
+        for sql in create_table_sqls:
+            if sql.strip():
+                logging.info(f"Executing: {sql[:100]}...")
+                hook.run(sql)
+        
+        logging.info("Database tables created/verified successfully")
+        return "Tables created successfully"
+        
+    except Exception as e:
+        logging.error(f"Error creating tables: {e}")
+        raise
+
+create_tables = PythonOperator(
     task_id='create_tables',
-    conn_id=DB_CONN_ID,
-    sql="""
-    -- APOD Images Table
-    CREATE TABLE IF NOT EXISTS apod_images (
-        id SERIAL PRIMARY KEY,
-        date DATE UNIQUE NOT NULL,
-        title VARCHAR(500),
-        explanation TEXT,
-        url TEXT,
-        media_type VARCHAR(50),
-        hdurl TEXT,
-        copyright VARCHAR(200),
-        service_version VARCHAR(20),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    
-    -- ISS Location Tracking
-    CREATE TABLE IF NOT EXISTS iss_location (
-        id SERIAL PRIMARY KEY,
-        timestamp TIMESTAMP NOT NULL UNIQUE,
-        latitude DECIMAL(10,6),
-        longitude DECIMAL(10,6),
-        altitude DECIMAL(10,2),
-        velocity DECIMAL(10,2),
-        is_interpolated BOOLEAN DEFAULT FALSE,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    
-    -- Near Earth Objects (Asteroids)
-    CREATE TABLE IF NOT EXISTS asteroids (
-        id SERIAL PRIMARY KEY,
-        neo_id VARCHAR(50),
-        name VARCHAR(200),
-        approach_date DATE,
-        estimated_diameter_min DECIMAL(15,6),
-        estimated_diameter_max DECIMAL(15,6),
-        relative_velocity DECIMAL(15,2),
-        miss_distance DECIMAL(20,2),
-        is_potentially_hazardous BOOLEAN,
-        absolute_magnitude DECIMAL(8,2),
-        nasa_jpl_url TEXT,
-        orbiting_body VARCHAR(50),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        UNIQUE(neo_id, approach_date)
-    );
-    
-    -- Space Missions
-    CREATE TABLE IF NOT EXISTS space_missions (
-        id SERIAL PRIMARY KEY,
-        mission_id VARCHAR(50) UNIQUE,
-        name VARCHAR(300),
-        launch_date TIMESTAMP,
-        rocket_name VARCHAR(200),
-        mission_type VARCHAR(100),
-        launch_location VARCHAR(200),
-        status VARCHAR(50),
-        probability INTEGER,
-        launch_service_provider VARCHAR(200),
-        image_url TEXT,
-        webcast_live BOOLEAN,
-        mission_description TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    
-    -- Create indexes for better performance
-    CREATE INDEX IF NOT EXISTS idx_apod_date ON apod_images(date);
-    CREATE INDEX IF NOT EXISTS idx_iss_timestamp ON iss_location(timestamp);
-    CREATE INDEX IF NOT EXISTS idx_asteroids_approach_date ON asteroids(approach_date);
-    CREATE INDEX IF NOT EXISTS idx_asteroids_hazardous ON asteroids(is_potentially_hazardous);
-    CREATE INDEX IF NOT EXISTS idx_missions_launch_date ON space_missions(launch_date);
-    CREATE INDEX IF NOT EXISTS idx_missions_status ON space_missions(status);
-    
-    -- Comprehensive verification of table creation
-    WITH expected_tables AS (
-        SELECT unnest(ARRAY['apod_images', 'iss_location', 'asteroids', 'space_missions']) AS table_name
-    ),
-    existing_tables AS (
-        SELECT table_name
-        FROM information_schema.tables
-        WHERE table_schema = 'public'
-        AND table_name IN ('apod_images', 'iss_location', 'asteroids', 'space_missions')
-    )
-    SELECT 
-        e.table_name,
-        CASE WHEN x.table_name IS NOT NULL THEN 'Created' ELSE 'MISSING' END AS status
-    FROM expected_tables e
-    LEFT JOIN existing_tables x ON e.table_name = x.table_name
-    ORDER BY e.table_name;
-    """,
-    autocommit=True,
+    python_callable=create_tables_if_not_exist,
     dag=dag
 )
 
@@ -844,39 +978,52 @@ fetch_missions_task = PythonOperator(
     dag=dag
 )
 
+def execute_sql_list(task_id, **context):
+    """
+    Execute a list of SQL statements pulled from xcom
+    """
+    sql_list = context['task_instance'].xcom_pull(task_ids=task_id)
+    if not sql_list:
+        logging.warning(f"No SQL list received from {task_id}")
+        return
+    
+    from airflow.hooks.base import BaseHook
+    hook = BaseHook.get_hook(conn_id=DB_CONN_ID)
+    
+    for sql in sql_list:
+        if sql.strip():
+            logging.info(f"Executing SQL: {sql[:100]}...")
+            hook.run(sql, autocommit=True)
+
 # Task 6: Insert APOD data
-insert_apod_task = SQLExecuteQueryOperator(
+insert_apod_task = PythonOperator(
     task_id='insert_apod_data',
-    conn_id=DB_CONN_ID,
-    sql="{{ task_instance.xcom_pull(task_ids='prepare_apod_query') }}",
-    autocommit=True,
+    python_callable=execute_sql_list,
+    op_kwargs={'task_id': 'prepare_apod_query'},
     dag=dag
 )
 
 # Task 7: Insert ISS data
-insert_iss_task = SQLExecuteQueryOperator(
+insert_iss_task = PythonOperator(
     task_id='insert_iss_data',
-    conn_id=DB_CONN_ID,
-    sql="{{ task_instance.xcom_pull(task_ids='prepare_iss_query') }}",
-    autocommit=True,
+    python_callable=execute_sql_list,
+    op_kwargs={'task_id': 'prepare_iss_query'},
     dag=dag
 )
 
 # Task 8: Insert asteroid data
-insert_asteroids_task = SQLExecuteQueryOperator(
+insert_asteroids_task = PythonOperator(
     task_id='insert_asteroids_data',
-    conn_id=DB_CONN_ID,
-    sql="{{ task_instance.xcom_pull(task_ids='prepare_asteroids_query') }}",
-    autocommit=True,
+    python_callable=execute_sql_list,
+    op_kwargs={'task_id': 'prepare_asteroids_query'},
     dag=dag
 )
 
 # Task 9: Insert missions data
-insert_missions_task = SQLExecuteQueryOperator(
+insert_missions_task = PythonOperator(
     task_id='insert_missions_data',
-    conn_id=DB_CONN_ID,
-    sql="{{ task_instance.xcom_pull(task_ids='prepare_missions_query') }}",
-    autocommit=True,
+    python_callable=execute_sql_list,
+    op_kwargs={'task_id': 'prepare_missions_query'},
     dag=dag
 )
 
@@ -923,25 +1070,39 @@ validate_data_quality = SQLExecuteQueryOperator(
     dag=dag
 )
 
+def cleanup_old_data(**context):
+    """
+    Cleanup old data based on database type
+    """
+    from airflow.hooks.base import BaseHook
+    conn = BaseHook.get_connection(DB_CONN_ID)
+    db_type = normalize_db_type(conn.conn_type)
+    
+    hook = BaseHook.get_hook(conn_id=DB_CONN_ID)
+    
+    if db_type == 'postgres':
+        sql_statements = [
+            "DELETE FROM iss_location WHERE timestamp < NOW() - INTERVAL '24 hours';",
+            "DELETE FROM asteroids WHERE approach_date < CURRENT_DATE - INTERVAL '15 days';",
+            "DELETE FROM space_missions WHERE launch_date < CURRENT_DATE - INTERVAL '15 days' AND status IN ('Launch Successful', 'Launch Failure');"
+        ]
+    else:  # sqlite
+        sql_statements = [
+            "DELETE FROM iss_location WHERE timestamp < datetime('now', '-24 hours');",
+            "DELETE FROM asteroids WHERE approach_date < date('now', '-15 days');",
+            "DELETE FROM space_missions WHERE launch_date < date('now', '-15 days') AND status IN ('Launch Successful', 'Launch Failure');"
+        ]
+    
+    logging.info(f"Executing cleanup SQL for {db_type}")
+    for sql in sql_statements:
+        if sql.strip():
+            logging.info(f"Executing: {sql}")
+            hook.run(sql, autocommit=True)
+
 # Task 15: Cleanup old data
-cleanup_old_data = SQLExecuteQueryOperator(
+cleanup_old_data_task = PythonOperator(
     task_id='cleanup_old_data',
-    conn_id=DB_CONN_ID,
-    autocommit=True,
-    sql="""
-    -- Keep only last 24 hours of ISS location data (enough for tracking path)
-    DELETE FROM iss_location 
-    WHERE timestamp < NOW() - INTERVAL '24 hours';
-    
-    -- Keep asteroid data for only 15 days
-    DELETE FROM asteroids 
-    WHERE approach_date < CURRENT_DATE - INTERVAL '15 days';
-    
-    -- Keep mission data for completed missions for only 15 days
-    DELETE FROM space_missions 
-    WHERE launch_date < CURRENT_DATE - INTERVAL '15 days' 
-    AND status IN ('Launch Successful', 'Launch Failure');
-    """,
+    python_callable=cleanup_old_data,
     dag=dag
 )
 
@@ -953,4 +1114,4 @@ fetch_iss_task >> prepare_iss_query >> insert_iss_task
 fetch_asteroids_task >> prepare_asteroids_query >> insert_asteroids_task
 fetch_missions_task >> prepare_missions_query >> insert_missions_task
 
-[insert_apod_task, insert_iss_task, insert_asteroids_task, insert_missions_task] >> validate_data_quality >> cleanup_old_data
+[insert_apod_task, insert_iss_task, insert_asteroids_task, insert_missions_task] >> validate_data_quality >> cleanup_old_data_task

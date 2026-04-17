@@ -6,49 +6,93 @@ import plotly.express as px
 import pandas as pd
 import time
 import traceback
-from dataflow.dataflow import Dataflow
 from sqlalchemy import text
 import plotly.io as pio
 
 pio.templates.default = "plotly_dark"
 
-dataflow = Dataflow()
-DB_CONN_ID = dataflow.connection("demo_db")
-
 class NASASpaceDashboard:
     def __init__(self, db_session=None):
         """
-        Initialize the NASA Space Dashboard with dataflow database session
+        Initialize the NASA Space Dashboard with optional database session
         
         Args:
-            db_session: Database session object. If None, uses global DB_CONN_ID.
+            db_session: Optional SQLAlchemy engine/session. If None, Airflow Hook is used.
         """
         self.app = dash.Dash(__name__, 
                             external_stylesheets=[dbc.themes.DARKLY],
                             suppress_callback_exceptions=True)
         self.app.title = "NASA Space Data Dashboard"
         
-        self.db_session = db_session or DB_CONN_ID
+        self.db_session = db_session
         self.setup_database()
         
         self.setup_layout()
         self.setup_callbacks()
     
     def setup_database(self):
-        """Setup database connection using dataflow session"""
+        """Setup database connection using Airflow Hook connection details"""
         try:
-            from sqlalchemy import text
-            test_query = text("SELECT 1")
+            from airflow.hooks.base import BaseHook
+            from sqlalchemy import create_engine
+            
+            # Get connection details from Airflow
+            conn = BaseHook.get_connection("demo_db")
+            self.db_type = conn.conn_type.lower()
+            
+            # Create SQLAlchemy engine
+            if self.db_type == 'sqlite':
+                # For SQLite, try multiple possible paths
+                possible_paths = [
+                    conn.host,
+                    conn.schema,
+                    '/home/jovyan/dataflow-demo/demo.db',
+                    '/home/jovyan/dataflow-demo/Demo 2 - Nasa Data Analysis/demo.db',
+                    './demo.db',
+                    'demo.db'
+                ]
+                
+                db_path = None
+                for path in possible_paths:
+                    if path and path != ':memory:':
+                        import os
+                        if os.path.exists(path):
+                            db_path = path
+                            break
+                
+                if not db_path:
+                    # Default to a known location
+                    db_path = '/home/jovyan/dataflow-demo/demo.db'
+                    print(f"Using default SQLite path: {db_path}")
+                
+                connection_string = f"sqlite:///{db_path}"
+                print(f"SQLite connection string: {connection_string}")
+                # Use NullPool to avoid threading issues with SQLite in multi-threaded apps
+                from sqlalchemy.pool import NullPool
+                self.engine = create_engine(connection_string, poolclass=NullPool)
+            else:
+                # For PostgreSQL
+                connection_string = f"postgresql://{conn.login}:{conn.password}@{conn.host}:{conn.port}/{conn.schema}"
+                self.engine = create_engine(connection_string)
+            self.db_session = self.engine
+            
+            print(f"Database connection established successfully. Type: {self.db_type}")
+            
+            # Create tables if they don't exist
+            self._create_tables_if_not_exist()
+            
+            # Test connection
+            test_query = "SELECT 1"
             result = self.execute_query_to_dataframe(test_query)
             
             if not result.empty:
-                print("Database connection established successfully via dataflow")
+                print("Database test query successful")
                 
                 try:
-                    mission_statuses_query = text("""
+                    mission_statuses_query = """
                         SELECT DISTINCT status FROM space_missions
                         ORDER BY status
-                    """)
+                    """
                     status_df = self.execute_query_to_dataframe(mission_statuses_query)
                     if not status_df.empty and 'status' in status_df.columns:
                         print("Available mission statuses in database:")
@@ -63,6 +107,93 @@ class NASASpaceDashboard:
             print(f"Database connection failed: {e}")
             print("Please check your dataflow configuration and ensure the database is running")
             self.db_session = None
+            # Set default db_type if connection fails
+            self.db_type = 'sqlite'  # Assume SQLite as default
+    
+    def _create_tables_if_not_exist(self):
+        """Create database tables if they don't exist"""
+        try:
+            create_table_sqls = [
+                """
+                CREATE TABLE IF NOT EXISTS apod_images (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    date DATE UNIQUE NOT NULL,
+                    title VARCHAR(500),
+                    explanation TEXT,
+                    url TEXT,
+                    media_type VARCHAR(50),
+                    hdurl TEXT,
+                    copyright VARCHAR(200),
+                    service_version VARCHAR(20),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS iss_location (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TIMESTAMP NOT NULL UNIQUE,
+                    latitude DECIMAL(10,6),
+                    longitude DECIMAL(10,6),
+                    altitude DECIMAL(10,2),
+                    velocity DECIMAL(10,2),
+                    is_interpolated INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS asteroids (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    neo_id VARCHAR(50),
+                    name VARCHAR(200),
+                    approach_date DATE,
+                    estimated_diameter_min DECIMAL(15,6),
+                    estimated_diameter_max DECIMAL(15,6),
+                    relative_velocity DECIMAL(15,2),
+                    miss_distance DECIMAL(20,2),
+                    is_potentially_hazardous INTEGER,
+                    absolute_magnitude DECIMAL(8,2),
+                    nasa_jpl_url TEXT,
+                    orbiting_body VARCHAR(50),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(neo_id, approach_date)
+                );
+                """,
+                """
+                CREATE TABLE IF NOT EXISTS space_missions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    mission_id VARCHAR(50) UNIQUE,
+                    name VARCHAR(300),
+                    launch_date TIMESTAMP,
+                    rocket_name VARCHAR(200),
+                    mission_type VARCHAR(100),
+                    launch_location VARCHAR(200),
+                    status VARCHAR(50),
+                    probability INTEGER,
+                    launch_service_provider VARCHAR(200),
+                    image_url TEXT,
+                    webcast_live INTEGER,
+                    mission_description TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                """,
+                "CREATE INDEX IF NOT EXISTS idx_apod_date ON apod_images(date);",
+                "CREATE INDEX IF NOT EXISTS idx_iss_timestamp ON iss_location(timestamp);",
+                "CREATE INDEX IF NOT EXISTS idx_asteroids_approach_date ON asteroids(approach_date);",
+                "CREATE INDEX IF NOT EXISTS idx_asteroids_hazardous ON asteroids(is_potentially_hazardous);",
+                "CREATE INDEX IF NOT EXISTS idx_missions_launch_date ON space_missions(launch_date);",
+                "CREATE INDEX IF NOT EXISTS idx_missions_status ON space_missions(status);"
+            ]
+            
+            with self.engine.begin() as conn:
+                for sql in create_table_sqls:
+                    if sql.strip():
+                        conn.execute(sql)
+            
+            print("Database tables created/verified successfully")
+            
+        except Exception as e:
+            print(f"Error creating tables: {e}")
+            # Don't fail the entire setup if table creation fails
     
     def execute_query_to_dataframe(self, query, params=None) -> pd.DataFrame:
         """
@@ -151,11 +282,16 @@ class NASASpaceDashboard:
         try:
             max_records = 15
 
+            if self.db_type == 'sqlite':
+                date_condition = f"date >= date('now', '-{days} days')"
+            else:
+                date_condition = f"date >= CURRENT_DATE - INTERVAL '{days} days'"
+
             query_sql = f"""
             SELECT 
                 title, explanation, date, media_type, url
             FROM apod_images 
-            WHERE date >= CURRENT_DATE - INTERVAL '{days} days'
+            WHERE {date_condition}
             ORDER BY date DESC
             LIMIT {max_records}
             """
@@ -246,9 +382,16 @@ class NASASpaceDashboard:
         fetch_hours = max(hours, 1)
         
         try:
+            if self.db_type == 'sqlite':
+                time_condition = f"timestamp >= datetime('now', '-{fetch_hours} hours')"
+                backup_time_condition = "timestamp >= datetime('now', '-24 hours')"
+            else:
+                time_condition = f"timestamp >= NOW() - INTERVAL '{fetch_hours} hours'"
+                backup_time_condition = "timestamp >= NOW() - INTERVAL '24 hours'"
+            
             query = text(f"""
             SELECT * FROM iss_location 
-            WHERE timestamp >= NOW() - INTERVAL '{fetch_hours} hours'
+            WHERE {time_condition}
             ORDER BY timestamp DESC
             LIMIT 1000  -- Prevent excessive data return
             """)
@@ -260,7 +403,7 @@ class NASASpaceDashboard:
                 print(f"No data for {fetch_hours}h window, trying 24h window")
                 backup_query = text(f"""
                 SELECT * FROM iss_location 
-                WHERE timestamp >= NOW() - INTERVAL '24 hours'
+                WHERE {backup_time_condition}
                 ORDER BY timestamp DESC
                 LIMIT 500
                 """)
@@ -284,20 +427,28 @@ class NASASpaceDashboard:
     
     def fetch_asteroid_data(self, days=30):
         """Fetch asteroid data from database using dataflow session"""
+        if self.db_type == 'sqlite':
+            date_condition = f"approach_date >= date('now') AND approach_date <= date('now', '+{days} days')"
+        else:
+            date_condition = f"approach_date >= CURRENT_DATE AND approach_date <= CURRENT_DATE + INTERVAL '{days} days'"
+        
         query = text(f"""
         SELECT * FROM asteroids 
-        WHERE approach_date >= CURRENT_DATE 
-        AND approach_date <= CURRENT_DATE + INTERVAL '{days} days'
+        WHERE {date_condition}
         ORDER BY approach_date ASC, miss_distance ASC
         """)
         return self.execute_query_to_dataframe(query)
     
     def fetch_missions_data(self, days=90):
         """Fetch space missions data from database using dataflow session"""
+        if self.db_type == 'sqlite':
+            date_condition = f"launch_date >= date('now') AND launch_date <= date('now', '+{days} days')"
+        else:
+            date_condition = f"launch_date >= CURRENT_DATE AND launch_date <= CURRENT_DATE + INTERVAL '{days} days'"
+        
         query = text(f"""
         SELECT * FROM space_missions 
-        WHERE launch_date >= CURRENT_DATE 
-        AND launch_date <= CURRENT_DATE + INTERVAL '{days} days'
+        WHERE {date_condition}
         ORDER BY launch_date ASC
         """)
         return self.execute_query_to_dataframe(query)
@@ -1571,10 +1722,15 @@ class NASASpaceDashboard:
             The total count of APOD images
         """
         try:
+            if self.db_type == 'sqlite':
+                date_condition = f"date >= date('now', '-{days} days')"
+            else:
+                date_condition = f"date >= CURRENT_DATE - INTERVAL '{days} days'"
+            
             query_sql = f"""
             SELECT COUNT(*) as total_count
             FROM apod_images 
-            WHERE date >= CURRENT_DATE - INTERVAL '{days} days'
+            WHERE {date_condition}
             """
             
             query = text(query_sql)
@@ -1787,3 +1943,4 @@ if __name__ == '__main__':
     print("Data refreshes every 5 minutes automatically")
     
     dashboard.run(debug=True, port=8050)
+    print("Data refreshes every 5 minutes automatically")
