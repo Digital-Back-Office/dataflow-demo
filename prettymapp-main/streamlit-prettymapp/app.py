@@ -1,8 +1,19 @@
 import copy
 import json
+import sys
 
 import streamlit as st
 from pathlib import Path
+
+_HERE = Path(__file__).resolve().parent
+_REPO_ROOT = _HERE.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+try:
+    from osmnx._errors import InsufficientResponseError
+except Exception:
+    InsufficientResponseError = None
 
 # Optional interactive map picker (streamlit-folium + folium). If not installed,
 # we'll show a helpful message when the user selects the picker mode.
@@ -49,7 +60,6 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-_HERE = Path(__file__).resolve().parent
 with (_HERE / "examples.json").open("r", encoding="utf8") as f:
     EXAMPLES = json.load(f)
 
@@ -64,12 +74,7 @@ if not st.session_state:
 st.session_state.setdefault("show_map_picker", False)
 st.session_state.setdefault("picked_lat", None)
 st.session_state.setdefault("picked_lon", None)
-
-# --- FIX: persist map center and zoom across reruns ---
-st.session_state.setdefault("map_center", [20.0, 0.0])
-st.session_state.setdefault("map_zoom", 2)
-# Track whether we need to jump to a newly picked pin
-st.session_state.setdefault("_jump_to_pin", False)
+st.session_state.setdefault("name_on", False)
 
 example_image_pattern = str(_HERE / "example_prints" / "{}_small.png")
 example_image_fp = [
@@ -106,19 +111,10 @@ if st.session_state["show_map_picker"]:
             "Install them and restart the app."
         )
     else:
-        # --- FIX: use persisted center/zoom instead of hardcoded defaults ---
-        # If we need to jump to a newly clicked pin, update center now
-        if st.session_state.get("_jump_to_pin"):
-            st.session_state["map_center"] = [
-                float(st.session_state["picked_lat"]),
-                float(st.session_state["picked_lon"]),
-            ]
-            st.session_state["map_zoom"] = 14
-            st.session_state["_jump_to_pin"] = False
-
+        st.caption("How to drop a pin: click once on the map to place the pin. Click another spot to move it.")
         m = folium.Map(
-            location=st.session_state["map_center"],
-            zoom_start=st.session_state["map_zoom"],
+            location=[20.0, 0.0],
+            zoom_start=2,
             tiles="OpenStreetMap",
         )
 
@@ -128,33 +124,22 @@ if st.session_state["show_map_picker"]:
                 tooltip="Selected location",
             ).add_to(m)
 
-        map_data = st_folium(m, width="100%", height=430)
+        map_data = st_folium(
+            m,
+            width="100%",
+            height=430,
+            returned_objects=["last_clicked"],
+        )
 
-        # --- FIX: save whatever center/zoom the user has panned/zoomed to ---
+        # Handle click — only pin placement
         if map_data:
-            if map_data.get("center"):
-                st.session_state["map_center"] = [
-                    map_data["center"]["lat"],
-                    map_data["center"]["lng"],
-                ]
-            if map_data.get("zoom"):
-                st.session_state["map_zoom"] = map_data["zoom"]
-
-            # Handle click — set flag so next rerun jumps to the new pin
             if map_data.get("last_clicked"):
                 clicked = map_data["last_clicked"]
                 try:
                     new_lat = float(clicked["lat"])
                     new_lon = float(clicked["lng"])
-                    # Only update if it's genuinely a new click
-                    if (
-                        new_lat != st.session_state.get("picked_lat")
-                        or new_lon != st.session_state.get("picked_lon")
-                    ):
-                        st.session_state["picked_lat"] = new_lat
-                        st.session_state["picked_lon"] = new_lon
-                        st.session_state["_jump_to_pin"] = True
-                        st.rerun()
+                    st.session_state["picked_lat"] = new_lat
+                    st.session_state["picked_lon"] = new_lon
                 except Exception:
                     pass
 
@@ -289,13 +274,19 @@ input_type = "Address"
 fname_base = "prettymapp"
 
 if submit_generate:
+    picked_lat_raw = st.session_state.get("picked_lat")
+    picked_lon_raw = st.session_state.get("picked_lon")
+    address_raw = st.session_state.get("address", "")
+    address_clean = str(address_raw).strip()
+    has_picked_point = picked_lat_raw is not None and picked_lon_raw is not None
+
     with st.spinner("Creating map... (may take up to a minute)"):
         rectangular = shape != "circle"
         try:
-            if st.session_state.get("picked_lat") is not None and st.session_state.get("picked_lon") is not None:
+            if has_picked_point:
                 input_type = "Pick on map"
-                picked_lat = float(st.session_state["picked_lat"])
-                picked_lon = float(st.session_state["picked_lon"])
+                picked_lat = float(picked_lat_raw)
+                picked_lon = float(picked_lon_raw)
                 aoi = get_aoi(
                     coordinates=(picked_lat, picked_lon),
                     radius=radius,
@@ -303,13 +294,15 @@ if submit_generate:
                 )
                 fname_base = f"{picked_lat:.6f}_{picked_lon:.6f}"
                 default_name = f"{picked_lat:.5f}, {picked_lon:.5f}"
-            elif str(address).strip():
+            elif address_clean:
                 input_type = "Address"
-                aoi = get_aoi(address=address.strip(), radius=radius, rectangular=rectangular)
-                fname_base = slugify(address)
-                default_name = address
+                aoi = get_aoi(address=address_clean, radius=radius, rectangular=rectangular)
+                fname_base = slugify(address_clean)
+                default_name = address_clean
             else:
-                st.error("Please enter an address or pick a location from map first.")
+                st.error(
+                    "No location provided. To drop a pin: click 📍 Pick from map, then click once on the map to place a pin, and click Generate map again."
+                )
                 aoi = None
 
             if aoi is not None:
@@ -336,6 +329,19 @@ if submit_generate:
                 generated = True
         except GeoCodingError as e:
             st.error(f"ERROR: {str(e)}")
+        except Exception as e:
+            if InsufficientResponseError is not None and isinstance(e, InsufficientResponseError):
+                st.error(
+                    "No matching OpenStreetMap features were found for this area. "
+                    "Try moving to a denser location or increasing the radius."
+                )
+            elif type(e).__name__ == "InsufficientResponseError":
+                st.error(
+                    "No matching OpenStreetMap features were found for this area. "
+                    "Try moving to a denser location or increasing the radius."
+                )
+            else:
+                raise
 
 if generated:
     st.markdown("</br>", unsafe_allow_html=True)
@@ -410,11 +416,5 @@ if generated:
         st.write(export_config)
 else:
     st.info("Set a location and click **Generate map** to render and unlock exports.")
-
-
-st.markdown("---")
-st.markdown(
-    "More infos and :star: at [github.com/chrieke/prettymapp](https://github.com/chrieke/prettymapp)"
-)
 
 st.session_state["previous_style"] = style
