@@ -13,7 +13,12 @@ try:
 except Exception:
     image_comparison = None
 
-st.set_page_config(layout="wide", page_title="Image Background Remover")
+SEO_TITLE = "Image Background Remover | Remove Photo Background Online"
+SEO_DESCRIPTION = "Upload an image, remove its background instantly, and download transparent or solid-background outputs in PNG, JPG, WEBP, or SVG."
+
+st.set_page_config(layout="wide", page_title=SEO_TITLE)
+st.header("Image Background Remover")
+st.text(SEO_DESCRIPTION)
 
 st.markdown(
     """

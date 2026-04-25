@@ -10,12 +10,17 @@ from groq import Groq
 # CONFIG & CLIENTS
 # ─────────────────────────────────────────────
 
+SEO_TITLE = "WatchDog | UK Bills Intelligence and Compliance Insights"
+SEO_DESCRIPTION = "Track UK legislation, search bills by sector, and review practical compliance impacts with AI-assisted summaries and analysis."
+
 st.set_page_config(
-    page_title="WatchDog – UK Bills Intelligence",
+    page_title=SEO_TITLE,
     page_icon="⚖️",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+st.header("WatchDog UK Bills Intelligence")
+st.text(SEO_DESCRIPTION)
 
 @st.cache_resource
 def get_supabase():
