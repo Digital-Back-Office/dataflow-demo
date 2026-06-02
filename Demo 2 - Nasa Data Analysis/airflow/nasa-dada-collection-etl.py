@@ -8,7 +8,6 @@ import json
 import logging
 import sys
 
-NASA_API_KEY = Variable.get("nasa_api_key")
 DB_CONN_ID = "demo_db"
 
 default_args = {
@@ -48,6 +47,7 @@ def fetch_apod_data(**context):
     import requests
 
     try:
+        NASA_API_KEY = Variable.get("nasa_api_key")
         apod_records = []
         execution_date = datetime.strptime(context['ds'], '%Y-%m-%d')
         
@@ -208,6 +208,7 @@ def fetch_asteroid_data(**context):
 
     try:
         from datetime import datetime, timedelta
+        NASA_API_KEY = Variable.get("nasa_api_key")
         
         start_date = datetime.strptime(context['ds'], '%Y-%m-%d')
         asteroid_records = []
