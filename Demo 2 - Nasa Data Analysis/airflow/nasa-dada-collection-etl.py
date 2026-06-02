@@ -4,10 +4,8 @@ from airflow.models import Variable
 from airflow.operators.python import PythonOperator
 from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 from airflow.hooks.base import BaseHook
-import pandas as pd
 import json
 import logging
-import requests
 import sys
 
 NASA_API_KEY = Variable.get("nasa_api_key")
@@ -47,6 +45,8 @@ def fetch_apod_data(**context):
     """
     Fetch Astronomy Picture of the Day data from NASA API for the past 15 days
     """
+    import requests
+
     try:
         apod_records = []
         execution_date = datetime.strptime(context['ds'], '%Y-%m-%d')
@@ -116,6 +116,8 @@ def fetch_iss_location(**context):
     24-hour ISS tracking path in the database.
     Data points are deduplicated by timestamp when inserted into the database.
     """
+    import requests
+
     try:
         url = "http://api.open-notify.org/iss-now.json"
         iss_records = []
@@ -202,6 +204,8 @@ def fetch_asteroid_data(**context):
     """
     Fetch Near Earth Objects (Asteroids) data from NASA API
     """
+    import requests
+
     try:
         from datetime import datetime, timedelta
         
@@ -265,6 +269,8 @@ def fetch_space_missions(**context):
     """
     Fetch upcoming space missions data from The Space Devs API
     """
+    import requests
+    
     try:
         url = "https://ll.thespacedevs.com/2.2.0/launch/"
         params = {

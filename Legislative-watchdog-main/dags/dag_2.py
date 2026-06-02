@@ -2,12 +2,8 @@ from airflow import DAG
 from airflow.decorators import task
 from airflow.models import Variable
 from datetime import datetime, timedelta
-import requests
 import time
-from supabase import create_client
 from io import BytesIO
-import pdfplumber
-from groq import Groq
 
 
 DEFAULT_ARGS = {
@@ -33,6 +29,7 @@ with DAG(
     # ---------------------------------------------------
     @task
     def get_latest_bills():
+        import requests
 
         all_bills = []
         page = 1
@@ -69,6 +66,8 @@ with DAG(
     # ---------------------------------------------------
     @task
     def extract_main_pdf(bills):
+        import requests
+        from supabase import create_client
 
         supabase = create_client(
             Variable.get("SUPABASE_URL"),
@@ -133,6 +132,8 @@ with DAG(
     # ---------------------------------------------------
     @task
     def upload_and_store(bill_pdf_list):
+        import requests
+        from supabase import create_client
 
         supabase = create_client(
             Variable.get("SUPABASE_URL"),
@@ -194,6 +195,8 @@ with DAG(
     # ---------------------------------------------------
     @task
     def extract_pdf_text():
+        from supabase import create_client
+        import pdfplumber
 
         supabase = create_client(
             Variable.get("SUPABASE_URL"),
@@ -250,6 +253,7 @@ with DAG(
 
         from groq import Groq
         import time
+        from supabase import create_client
 
         client = Groq(
             api_key=Variable.get("GROQ_API_KEY")
@@ -341,6 +345,7 @@ with DAG(
         import json
         import time
         from groq import Groq
+        from supabase import create_client
         
         client = Groq(api_key=Variable.get("GROQ_API_KEY"))
         supabase = create_client(
@@ -434,6 +439,7 @@ with DAG(
     @task
     def generate_embeddings():
         from sentence_transformers import SentenceTransformer
+        from supabase import create_client
 
         supabase = create_client(
             Variable.get("SUPABASE_URL"),

@@ -1,8 +1,5 @@
-import requests
-from bs4 import BeautifulSoup
+
 import os
-import zipfile
-import pandas as pd
 import time
 from io import BytesIO
 from airflow import DAG
@@ -63,6 +60,7 @@ SAVE_DIR = get_data_path()
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 def parse_time(hhmm):
+    import pandas as pd
     if pd.isna(hhmm):
         return None
     try:
@@ -76,6 +74,11 @@ def parse_time(hhmm):
         return None
 
 def process_bts_data(**kwargs):
+    import requests
+    from bs4 import BeautifulSoup
+    import zipfile
+    import pandas as pd
+
     print("Starting BTS data processing...")
     print(f"Data will be saved to: {SAVE_DIR}")
 
@@ -223,6 +226,8 @@ def limit_rows_for_sqlite(rows, limit: int):
     return rows[:limit] if rows else rows
 
 def run_transform_and_load(**kwargs):
+    import pandas as pd
+
     try:
         base_path = SAVE_DIR
 
@@ -377,6 +382,8 @@ def run_transform_and_load(**kwargs):
 
 def get_generated_sql(**kwargs):
     """Read generated SQL and return backend-friendly format."""
+    import pandas as pd
+    
     data_path = SAVE_DIR
     
     sql_file = os.path.join(data_path, "generated_sql.sql")
