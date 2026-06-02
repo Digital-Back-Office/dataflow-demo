@@ -219,6 +219,8 @@ def run_transform_and_load(**kwargs):
     import sys
     import os
 
+    sys.path.insert(0, "/home/jovyan/1/fdaairflow")
+
     print("cwd:", os.getcwd())
     print("file:", __file__)
     print("sys.path:", sys.path)
