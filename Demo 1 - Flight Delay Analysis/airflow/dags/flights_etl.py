@@ -216,6 +216,12 @@ def limit_rows_for_sqlite(rows, limit: int):
 
 def run_transform_and_load(**kwargs):
     import pandas as pd
+    import sys
+    import os
+
+    print("cwd:", os.getcwd())
+    print("file:", __file__)
+    print("sys.path:", sys.path)
     from helpers.transform import (
         get_delay_distribution,
         get_flight_statistics_summary,
