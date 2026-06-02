@@ -9,17 +9,6 @@ from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 from datetime import datetime, timedelta
 import logging
 
-from helpers.transform import (
-    get_delay_distribution,
-    get_flight_statistics_summary,
-    get_delay_vs_hour,
-    get_hourly_avg_delay,
-    get_top10_origin_airports_by_delay,
-    get_weekday_avg_delay,
-    get_origin_airport_stats,
-    get_airline_performance_stats,
-)
-
 # Configure logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -227,6 +216,16 @@ def limit_rows_for_sqlite(rows, limit: int):
 
 def run_transform_and_load(**kwargs):
     import pandas as pd
+    from helpers.transform import (
+        get_delay_distribution,
+        get_flight_statistics_summary,
+        get_delay_vs_hour,
+        get_hourly_avg_delay,
+        get_top10_origin_airports_by_delay,
+        get_weekday_avg_delay,
+        get_origin_airport_stats,
+        get_airline_performance_stats,
+    )
 
     try:
         base_path = SAVE_DIR
