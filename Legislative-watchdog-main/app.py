@@ -3,7 +3,9 @@ import os
 import re
 import json
 import math
-from supabase import create_client
+import pandas as pd
+from airflow.providers.postgres.hooks.postgres import PostgresHook
+from airflow.providers.sqlite.hooks.sqlite import SqliteHook
 from groq import Groq
 
 # ─────────────────────────────────────────────
@@ -18,15 +20,15 @@ st.set_page_config(
 )
 
 @st.cache_resource
-def get_supabase():
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
-
-    if not url or not key:
-        st.error("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY.")
-        st.stop()
-
-    return create_client(url, key)
+def get_db_hook():
+    try:
+        hook = PostgresHook(postgres_conn_id="demo_db")
+        hook.get_first("SELECT 1")
+        return hook
+    except Exception:
+        hook = SqliteHook(sqlite_conn_id="demo_db")
+        hook.get_first("SELECT 1")
+        return hook
 
 
 @st.cache_resource
@@ -38,6 +40,71 @@ def get_groq():
         st.stop()
 
     return Groq(api_key=api_key)
+
+
+
+def _is_missing(value) -> bool:
+    if value is None:
+        return True
+    try:
+        return bool(pd.isna(value))
+    except Exception:
+        return False
+
+
+def _normalize_json_list(value) -> list:
+    if _is_missing(value):
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+    return list(value) if isinstance(value, set) else []
+
+
+def normalize_bill_record(record: dict) -> dict:
+    normalized = {}
+    for key, value in record.items():
+        normalized[key] = None if _is_missing(value) else value
+
+    normalized["industry_tags"] = _normalize_json_list(normalized.get("industry_tags"))
+    normalized["embedding"] = _normalize_json_list(normalized.get("embedding"))
+    normalized["title"] = normalized.get("title") or ""
+    normalized["summary"] = normalized.get("summary") or ""
+    normalized["full_text"] = normalized.get("full_text") or ""
+    normalized["pdf_storage_path"] = normalized.get("pdf_storage_path") or ""
+    normalized["pdf_public_url"] = normalized.get("pdf_public_url") or ""
+    return normalized
+
+
+def _read_df(query, params=None):
+    hook = get_db_hook()
+    rows = hook.get_records(query, parameters=params or ())
+    return rows
+
+
+def render_pdf_download(pdf_path: str, key: str):
+    if not pdf_path or not os.path.exists(pdf_path):
+        return
+    try:
+        with open(pdf_path, "rb") as f:
+            pdf_bytes = f.read()
+        st.download_button(
+            label="Download PDF",
+            data=pdf_bytes,
+            file_name=os.path.basename(pdf_path),
+            mime="application/pdf",
+            key=key,
+            use_container_width=True,
+        )
+    except Exception:
+        return
 # ─────────────────────────────────────────────
 # STYLES
 # ─────────────────────────────────────────────
@@ -569,17 +636,52 @@ def smart_date(bill: dict) -> str:
     fake_date = start + timedelta(days=offset)
     return fake_date.strftime("%d %b %Y")
 
-def fetch_all_bills(supabase):
-    res = supabase.table("uk_bills_main") \
-        .select("bill_id, title, introduced_date, current_stage, sponsor, industry_tags, summary, pdf_public_url") \
-        .not_.is_("summary", None) \
-        .order("introduced_date", desc=True) \
-        .execute()
-    return res.data or []
+def fetch_all_bills(db_hook):
+    rows = _read_df(
+        """
+        SELECT
+            bill_id,
+            title,
+            introduced_date,
+            current_stage,
+            sponsor,
+            industry_tags,
+            summary,
+            full_text,
+            pdf_storage_path,
+            pdf_public_url
+        FROM uk_bills_main
+        WHERE summary IS NOT NULL
+        ORDER BY introduced_date DESC NULLS LAST
+        """
+    )
+    if not rows:
+        return []
+    columns = [
+        "bill_id", "title", "introduced_date", "current_stage", "sponsor",
+        "industry_tags", "summary", "full_text", "pdf_storage_path", "pdf_public_url"
+    ]
+    return [normalize_bill_record(dict(zip(columns, row))) for row in rows]
 
-def fetch_bill_full(supabase, bill_id):
-    res = supabase.table("uk_bills_main").select("*").eq("bill_id", bill_id).execute()
-    return res.data[0] if res.data else None
+
+def fetch_bill_full(db_hook, bill_id):
+    rows = _read_df(
+        """
+        SELECT *
+        FROM uk_bills_main
+        WHERE bill_id = %s
+        LIMIT 1
+        """,
+        params=(bill_id,),
+    )
+    if not rows:
+        return None
+    columns = [
+        "bill_id", "title", "introduced_date", "current_stage", "sponsor",
+        "pdf_storage_path", "pdf_public_url", "full_text", "summary",
+        "industry_tags", "embedding", "text_extracted", "created_at", "updated_at"
+    ]
+    return normalize_bill_record(dict(zip(columns, rows[0])))
 
 def parse_summary_to_structured(summary: str) -> dict:
     sections = {"overview": [], "key_changes": [], "affected": [], "impact": [], "dates": []}
@@ -689,14 +791,14 @@ for key, default in [
 # INIT CLIENTS
 # ─────────────────────────────────────────────
 
-supabase = get_supabase()
+db_hook = get_db_hook()
 groq_client = get_groq()
 
 # ─────────────────────────────────────────────
 # PRE-FETCH DATA (needed by sidebar stats + inline filter)
 # ─────────────────────────────────────────────
 
-bills_all = fetch_all_bills(supabase)
+bills_all = fetch_all_bills(db_hook)
 tags_list = all_tags(bills_all)
 
 
@@ -807,7 +909,7 @@ if st.session_state.page == "home":
             date    = smart_date(bill)
             tags    = map_to_major_industries(bill.get("full_text"), bill.get("industry_tags"), bill.get("summary"), title)
             summary = bill.get("summary") or ""
-            pdf_url = bill.get("pdf_public_url") or ""
+            pdf_path = bill.get("pdf_storage_path") or bill.get("pdf_public_url") or ""
 
             structured   = parse_summary_to_structured(summary)
             overview_pts = structured["overview"][:2]
@@ -856,16 +958,7 @@ if st.session_state.page == "home":
                         st.session_state.page = "detail"
                         st.rerun()
                 with col2:
-                    if pdf_url:
-                        st.markdown(
-                            # f"<a href='{pdf_url}' target='_blank' style='"
-                            # f"display:block;text-align:center;background:#c8a96e;color:#0a0c10 !important;"
-                            # f"font-family:IBM Plex Mono,monospace;font-weight:600;font-size:0.78rem;"
-                            # f"letter-spacing:1.5px;text-transform:uppercase;text-decoration:none;"
-                            # f"border-radius:4px;padding:8px 20px;'> SOURCE PDF</a>",
-                             f"<div class='pdf-btn-wrap'><a href='{pdf_url}' target='_blank'> SOURCE PDF</a></div>",
-                            unsafe_allow_html=True
-                        )
+                    render_pdf_download(pdf_path, key=f"download_{bill_id}")
 
 
 # ─────────────────────────────────────────────
@@ -884,7 +977,7 @@ elif st.session_state.page == "detail":
     )
 
     bill_id = st.session_state.selected_bill_id
-    bill    = fetch_bill_full(supabase, bill_id)
+    bill    = fetch_bill_full(db_hook, bill_id)
 
     if not bill:
         st.error("Bill not found.")
@@ -898,20 +991,21 @@ elif st.session_state.page == "detail":
     tags      = map_to_major_industries(bill.get("full_text"), bill.get("industry_tags"), bill.get("summary"), title)
     summary   = bill.get("summary") or ""
     full_text = bill.get("full_text") or ""
-    pdf_url   = bill.get("pdf_public_url") or ""
+    pdf_path  = bill.get("pdf_storage_path") or bill.get("pdf_public_url") or ""
 
     if st.button("← Back to Bills"):
         st.session_state.page = "home"
         st.rerun()
 
     tags_html = "".join(f"<span class='tag'>{INDUSTRY_ICONS.get(t, '')} {t}</span>" for t in tags)
+    if pdf_path:
+        render_pdf_download(pdf_path, key=f"detail_download_{bill_id}")
     st.markdown(f"""
     <div style='margin-bottom:28px;'>
         <div style='font-family:IBM Plex Mono,monospace;font-size:0.65rem;color:#7a8396;letter-spacing:3px;text-transform:uppercase;margin-bottom:8px;'>UK Parliament Bill</div>
         <div style='font-family:Playfair Display,serif;font-size:2rem;font-weight:900;color:#e8e8e8;line-height:1.2;margin-bottom:12px;'>{title}</div>
         <div style='font-family:IBM Plex Mono,monospace;font-size:0.72rem;color:#7a8396;display:flex;gap:22px;flex-wrap:wrap;margin-bottom:12px;'>
             <span>📅 {date}</span>
-            {"<a href='" + pdf_url + "' target='_blank' style='color:#4e9eff;text-decoration:none;'>📄 Source PDF ↗</a>" if pdf_url else ""}
         </div>
         <div>{tags_html}</div>
     </div><hr/>
