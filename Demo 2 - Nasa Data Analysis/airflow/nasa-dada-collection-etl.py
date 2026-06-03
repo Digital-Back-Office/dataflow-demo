@@ -7,25 +7,26 @@ from airflow.hooks.base import BaseHook
 import json
 import logging
 import sys
+from datetime import datetime, timedelta, timezone
 
 DB_CONN_ID = "demo_db"
 
 default_args = {
     'owner': 'space_data_team',
     'depends_on_past': False,
-    'start_date': datetime(2025, 7, 1),
     'email_on_failure': False,
     'email_on_retry': False,
     'retries': 3,
     'retry_delay': timedelta(minutes=5),
-    'catchup': False
 }
 
 dag = DAG(
     'nasa_space_data_etl_pipeline',
     default_args=default_args,
+    start_date=datetime(2026, 6, 4, 2, 0, tzinfo=timezone.utc),
     description='Daily ETL pipeline to fetch NASA space data and store in database',
-    schedule_interval='0 8 * * *',
+    schedule='0 2 * * *',   # Daily at 02:00 UTC
+    catchup=False,
     max_active_runs=1,
     tags=['etl', 'nasa', 'space', 'daily']
 )
