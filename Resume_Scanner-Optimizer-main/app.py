@@ -27,14 +27,18 @@ from src.keyword_analyzer import KeywordAnalyzer
 from src.ai_suggestions import AISuggestionEngine
 from src.format_detector import ATSFormatDetector
 
+SEO_TITLE = "Resume ATS Scanner and Optimizer | Improve Resume Match Score"
+SEO_DESCRIPTION = "Analyze your resume against job descriptions, detect ATS issues, identify missing keywords, and get AI suggestions to improve hiring match rates."
 
 # Configure page
 st.set_page_config(
-    page_title="Resume ATS Scanner & Optimizer",
+    page_title=SEO_TITLE,
     page_icon="",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+st.header("Resume ATS Scanner and Optimizer")
+st.text(SEO_DESCRIPTION)
 
 # Initialize session state
 if 'parsed_resume' not in st.session_state:

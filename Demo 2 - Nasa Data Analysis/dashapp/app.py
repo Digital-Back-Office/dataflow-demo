@@ -6,10 +6,47 @@ import plotly.express as px
 import pandas as pd
 import time
 import traceback
+import os
+import json
 from sqlalchemy import text
 import plotly.io as pio
 
 pio.templates.default = "plotly_dark"
+
+SEO_TITLE = "NASA Space Data Dashboard | APOD, ISS Tracker, Asteroids and Missions"
+SEO_DESCRIPTION = "Explore NASA space intelligence with APOD gallery, ISS live tracking, asteroid monitoring, and upcoming mission insights in one dashboard."
+SEO_KEYWORDS = "NASA dashboard, APOD, ISS tracker, asteroid monitoring, space missions, space data analytics"
+SEO_IMAGE = "https://app.dataflow.zone/static/images/dataflow-logo-header.svg"
+PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", "").rstrip("/")
+CANONICAL_URL = PUBLIC_BASE_URL or "https://app.dataflow.zone"
+
+
+def get_seo_meta_tags():
+    return [
+        {"name": "description", "content": SEO_DESCRIPTION},
+        {"name": "keywords", "content": SEO_KEYWORDS},
+        {"name": "robots", "content": "index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1"},
+        {"property": "og:title", "content": SEO_TITLE},
+        {"property": "og:description", "content": SEO_DESCRIPTION},
+        {"property": "og:type", "content": "website"},
+        {"property": "og:url", "content": CANONICAL_URL},
+        {"property": "og:image", "content": SEO_IMAGE},
+        {"name": "twitter:card", "content": "summary_large_image"},
+        {"name": "twitter:title", "content": SEO_TITLE},
+        {"name": "twitter:description", "content": SEO_DESCRIPTION},
+        {"name": "twitter:image", "content": SEO_IMAGE},
+    ]
+
+
+SEO_STRUCTURED_DATA = {
+    "@context": "https://schema.org",
+    "@type": "WebApplication",
+    "name": "NASA Space Data Dashboard",
+    "description": SEO_DESCRIPTION,
+    "applicationCategory": "ScienceApplication",
+    "operatingSystem": "Web Browser",
+    "url": CANONICAL_URL,
+}
 
 class NASASpaceDashboard:
     def __init__(self, db_session=None):
@@ -21,8 +58,9 @@ class NASASpaceDashboard:
         """
         self.app = dash.Dash(__name__, 
                             external_stylesheets=[dbc.themes.DARKLY],
+                            meta_tags=get_seo_meta_tags(),
                             suppress_callback_exceptions=True)
-        self.app.title = "NASA Space Data Dashboard"
+        self.app.title = SEO_TITLE
         
         self.db_session = db_session
         self.setup_database()
@@ -1913,6 +1951,7 @@ label, .form-label {
 
 if __name__ == '__main__':
     dashboard = NASASpaceDashboard()
+    seo_json_ld = json.dumps(SEO_STRUCTURED_DATA)
     
     dashboard.app.index_string = f'''
     <!DOCTYPE html>
@@ -1923,6 +1962,8 @@ if __name__ == '__main__':
                 {custom_css}
             </style>
             {{%metas%}}
+            <link rel="canonical" href="{CANONICAL_URL}" />
+            <script type="application/ld+json">{seo_json_ld}</script>
             {{%favicon%}}
             {{%css%}}
         </head>

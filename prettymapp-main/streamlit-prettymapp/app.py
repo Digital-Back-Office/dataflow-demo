@@ -34,9 +34,14 @@ from utils import (
 from prettymapp.geo import GeoCodingError, get_aoi
 from prettymapp.settings import STYLES
 
+SEO_TITLE = "Prettymapp | Generate Beautiful OpenStreetMap Posters"
+SEO_DESCRIPTION = "Create stylish city maps from OpenStreetMap data with custom themes, radius, shapes, and export options like PNG, SVG, and GeoJSON."
+
 st.set_page_config(
-    page_title="prettymapp", page_icon="🖼️", initial_sidebar_state="collapsed"
+    page_title=SEO_TITLE, page_icon="🖼️", initial_sidebar_state="collapsed"
 )
+st.header("Prettymapp")
+st.text(SEO_DESCRIPTION)
 st.markdown("# Prettymapp")
 st.markdown(
     """
