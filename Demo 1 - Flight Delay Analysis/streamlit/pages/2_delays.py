@@ -1,168 +1,132 @@
 import streamlit as st
 import pandas as pd
-import altair as alt
+import plotly.express as px
+import plotly.graph_objects as go
 from utils.queries import (
     get_hourly_avg_delay,
     get_top10_origin_airports_by_delay,
     get_weekday_avg_delay,
     get_airports,
-    get_airlines
 )
 
-st.set_page_config(page_title="⏱️ Delay Analysis", layout="wide")
-st.title("⏱️ Flight Delay Analysis")
+st.set_page_config(page_title="Delay Analysis · Flight Delays", page_icon="⏱️", layout="wide")
+st.title("⏱️ Delay Analysis")
+st.caption("When are delays worst? Which airports and days should you avoid?")
 
-# --- Load precomputed data ---
-hourly_df = pd.DataFrame(get_hourly_avg_delay())
-top10_airports = pd.DataFrame(get_top10_origin_airports_by_delay())
-dow_delay = pd.DataFrame(get_weekday_avg_delay())
+# ── cached loaders ─────────────────────────────────────────────────────────────
+@st.cache_data(ttl=300)
+def load_hourly():
+    return pd.DataFrame(get_hourly_avg_delay())
 
-# Lookup tables
-airports = get_airports()
-airlines = get_airlines()
+@st.cache_data(ttl=300)
+def load_top10():
+    return pd.DataFrame(get_top10_origin_airports_by_delay())
 
-# --- Heatmap: Hour vs Delay ---
-st.markdown("### 🕒 Heatmap of Average Departure Delay by Hour")
+@st.cache_data(ttl=300)
+def load_dow():
+    return pd.DataFrame(get_weekday_avg_delay())
 
-heatmap = alt.Chart(hourly_df).mark_rect().encode(
-    x=alt.X('hour:O', title="Scheduled Hour"),
-    y=alt.value(1),
-    color=alt.Color('avg_departure_delay:Q', scale=alt.Scale(scheme='redyellowgreen', reverse=True), title="Avg Delay (min)"),
-    tooltip=['hour', 'avg_departure_delay']
-).properties(width=700, height=100)
+@st.cache_data(ttl=300)
+def load_airports():
+    return get_airports()
 
-st.altair_chart(heatmap, use_container_width=True)
+with st.spinner("Loading…"):
+    try:
+        hourly_df    = load_hourly()
+        top10_df     = load_top10()
+        dow_df       = load_dow()
+        airports_map = load_airports()
+    except Exception:
+        st.error("Could not load data. Check that the pipeline has run.")
+        st.stop()
 
-# --- Top 10 Airports by Delay ---
-st.markdown("### 🛫 Top 10 Origin Airports with Highest Avg Departure Delay")
-
-top10_airports['origin_full'] = top10_airports['origin_airport'].map(
-    lambda code: airports.get(code, {}).get('airport', code)
+# resolve airport names
+top10_df["airport_name"] = top10_df["origin_airport"].map(
+    lambda c: airports_map.get(c, {}).get("airport", c)
 )
 
-bar_chart = alt.Chart(top10_airports).mark_bar().encode(
-    x=alt.X('avg_departure_delay:Q', title='Avg Departure Delay (min)'),
-    y=alt.Y('origin_full:N', sort='-x', title='Airport'),
-    tooltip=['origin_full', 'avg_departure_delay']
-).properties(height=400)
+# ── hourly heatmap (1-row colour strip) + line ───────────────────────────────
+st.subheader("Average Departure Delay by Hour of Day")
 
-st.altair_chart(bar_chart, use_container_width=True)
+fig_hour = px.bar(
+    hourly_df.sort_values("hour"),
+    x="hour",
+    y="avg_departure_delay",
+    color="avg_departure_delay",
+    color_continuous_scale="RdYlGn_r",
+    labels={"hour": "Hour (24h)", "avg_departure_delay": "Avg Dep Delay (min)"},
+    template="plotly_dark",
+)
+fig_hour.update_layout(
+    coloraxis_showscale=False,
+    bargap=0.1,
+    height=300,
+    margin=dict(t=10, b=10),
+)
+st.plotly_chart(fig_hour, use_container_width=True)
 
-# --- Delay by Day of Week ---
-st.markdown("### 📆 Average Delay by Day of the Week")
-
-# Ensure order of days
-dow_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
-dow_delay['day_of_week'] = pd.Categorical(dow_delay['day_of_week'], categories=dow_order, ordered=True)
-dow_delay = dow_delay.sort_values('day_of_week')
-
-# Melt for line chart
-dow_delay_melted = dow_delay.melt(
-    id_vars='day_of_week',
-    value_vars=['avg_departure_delay', 'avg_arrival_delay'],
-    var_name='delay_type',
-    value_name='delay'
+st.caption(
+    "Delays accumulate throughout the day — flights after 18:00 carry compounding lateness "
+    "from earlier in the schedule."
 )
 
-line = alt.Chart(dow_delay_melted).mark_line(point=True).encode(
-    x=alt.X('day_of_week:N', title='Day of Week'),
-    y=alt.Y('delay:Q', title='Average Delay (min)'),
-    color=alt.Color('delay_type:N', title='Type of Delay'),
-    tooltip=['day_of_week:N', 'delay_type:N', 'delay:Q']
-).properties(height=300)
+st.divider()
 
-st.altair_chart(line, use_container_width=True)
+# ── top 10 most delayed airports ─────────────────────────────────────────────
+st.subheader("Top 10 Most Delayed Origin Airports")
+fig_airports = px.bar(
+    top10_df.sort_values("avg_departure_delay"),
+    x="avg_departure_delay",
+    y="airport_name",
+    orientation="h",
+    color="avg_departure_delay",
+    color_continuous_scale="Reds",
+    labels={"avg_departure_delay": "Avg Dep Delay (min)", "airport_name": ""},
+    template="plotly_dark",
+)
+fig_airports.update_layout(coloraxis_showscale=False, height=420, margin=dict(t=10, b=10))
+st.plotly_chart(fig_airports, use_container_width=True)
 
+# ── day-of-week ───────────────────────────────────────────────────────────────
+st.subheader("Average Delay by Day of the Week")
+dow_order = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+dow_df["day_of_week"] = pd.Categorical(dow_df["day_of_week"], categories=dow_order, ordered=True)
+dow_df = dow_df.sort_values("day_of_week")
 
+fig_dow = go.Figure()
+fig_dow.add_trace(go.Scatter(
+    x=dow_df["day_of_week"],
+    y=dow_df["avg_departure_delay"],
+    name="Departure",
+    mode="lines+markers",
+    line=dict(color="#EF553B", width=2),
+    marker=dict(size=8),
+))
+fig_dow.add_trace(go.Scatter(
+    x=dow_df["day_of_week"],
+    y=dow_df["avg_arrival_delay"],
+    name="Arrival",
+    mode="lines+markers",
+    line=dict(color="#636EFA", width=2),
+    marker=dict(size=8),
+))
+fig_dow.update_layout(
+    template="plotly_dark",
+    yaxis_title="Avg Delay (min)",
+    xaxis_title="",
+    legend_title="Delay Type",
+    height=420,
+    margin=dict(t=10, b=10),
+)
+st.plotly_chart(fig_dow, use_container_width=True)
 
+# ── insight callout ───────────────────────────────────────────────────────────
+st.divider()
+worst_day  = dow_df.loc[dow_df["avg_departure_delay"].idxmax(), "day_of_week"]
+best_day   = dow_df.loc[dow_df["avg_departure_delay"].idxmin(), "day_of_week"]
+worst_port = top10_df.loc[top10_df["avg_departure_delay"].idxmax(), "airport_name"]
 
-
-
-# import streamlit as st
-# import pandas as pd
-# import altair as alt
-# from utils.queries import get_all_flights, get_airports, get_airlines
-
-# st.set_page_config(page_title="⏱️ Delay Analysis", layout="wide")
-# st.title("⏱️ Flight Delay Analysis")
-
-# # --- Load and prep data ---
-# flights = pd.DataFrame(get_all_flights(limit=10000))
-# airports = get_airports()
-# airlines = get_airlines()
-
-# # Extract readable names from nested airport dict
-# flights['origin_full'] = flights['origin_airport'].map(lambda x: airports.get(x, {}).get('airport', x))
-# flights['destination_full'] = flights['destination_airport'].map(lambda x: airports.get(x, {}).get('airport', x))
-# flights['airline_full'] = flights['airline'].map(airlines)
-# flights['hour'] = pd.to_datetime(flights['scheduled_departure']).dt.hour
-# flights['day_of_week'] = pd.to_datetime(flights['scheduled_departure']).dt.day_name()
-
-# # --- Sidebar filters ---
-# st.sidebar.header("🔍 Filters")
-# selected_airport = st.sidebar.selectbox("Origin Airport", ["All"] + sorted(flights['origin_full'].dropna().unique()))
-# selected_airline = st.sidebar.selectbox("Airline", ["All"] + sorted(flights['airline_full'].dropna().unique()))
-
-# if selected_airport != "All":
-#     flights = flights[flights['origin_full'] == selected_airport]
-# if selected_airline != "All":
-#     flights = flights[flights['airline_full'] == selected_airline]
-
-# # --- Heatmap: Hour vs Delay ---
-# st.markdown("### 🕒 Heatmap of Average Departure Delay by Hour")
-
-# heatmap_data = flights.groupby('hour')['departure_delay'].mean().reset_index()
-
-# heatmap = alt.Chart(heatmap_data).mark_rect().encode(
-#     x=alt.X('hour:O', title="Scheduled Hour"),
-#     y=alt.value(1),  # dummy Y to show just a horizontal bar
-#     color=alt.Color('departure_delay:Q', scale=alt.Scale(scheme='redyellowgreen', reverse=True), title="Avg Delay (min)"),
-#     tooltip=['hour', 'departure_delay']
-# ).properties(width=700, height=100)
-
-# st.altair_chart(heatmap, use_container_width=True)
-
-# # --- Top 10 Airports by Delay ---
-# st.markdown("### 🛫 Top 10 Origin Airports with Highest Avg Departure Delay")
-
-# airport_delays = (
-#     flights.groupby('origin_full')['departure_delay']
-#     .mean()
-#     .sort_values(ascending=False)
-#     .head(10)
-#     .reset_index()
-# )
-
-# bar_chart = alt.Chart(airport_delays).mark_bar().encode(
-#     x=alt.X('departure_delay:Q', title='Avg Departure Delay (min)'),
-#     y=alt.Y('origin_full:N', sort='-x', title='Airport'),
-#     tooltip=['origin_full', 'departure_delay']
-# ).properties(height=400)
-
-# st.altair_chart(bar_chart, use_container_width=True)
-
-# # --- Delay by Day of Week ---
-# st.markdown("### 📆 Average Delay by Day of the Week")
-
-# dow_delay = (
-#     flights.groupby('day_of_week')[['departure_delay', 'arrival_delay']]
-#     .mean()
-#     .reindex(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'])
-#     .reset_index()
-# )
-
-# dow_delay_melted = dow_delay.melt(
-#     id_vars='day_of_week',
-#     value_vars=['departure_delay', 'arrival_delay'],
-#     var_name='delay_type',
-#     value_name='delay'
-# )
-
-# line = alt.Chart(dow_delay_melted).mark_line(point=True).encode(
-#     x=alt.X('day_of_week:N', sort=['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']),
-#     y=alt.Y('delay:Q', title='Average Delay (min)'),
-#     color=alt.Color('delay_type:N', title='Type of Delay'),
-#     tooltip=['day_of_week:N', 'delay_type:N', 'delay:Q']
-# ).properties(height=300)
-
-# st.altair_chart(line, use_container_width=True)
+col1, col2, col3 = st.columns(3)
+col1.metric("Worst day to fly", str(worst_day))
+col2.metric("Best day to fly",  str(best_day))
+col3.metric("Most delayed airport", worst_port)
