@@ -118,12 +118,12 @@
  *.key
  secrets.json
 
- # dbt
- neighbourhood_scout/dbt/target/
- neighbourhood_scout/dbt/logs/
+# dbt
+neighbourhood_scout/dbt/target/
+neighbourhood_scout/dbt/logs/
 
- # Dash generated assets
- neighbourhood_scout/dashapp/assets/
- neighbourhood_scout/dashapp/__pycache__/
+# Dash generated assets
+neighbourhood_scout/dashapp/assets/
+neighbourhood_scout/dashapp/__pycache__/
 
  # End of .gitignore
