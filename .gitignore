@@ -1,122 +1,122 @@
- # Python
- # Byte-compiled / optimized / DLL files
- __pycache__/
- *.py[cod]
- *$py.class
- *.pyc
+# Python
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
 
- # C extensions
- *.so
+# C extensions
+*.so
 
- # Distribution / packaging
- build/
- dist/
- *.egg-info/
- *.egg
- pip-wheel-metadata/
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+pip-wheel-metadata/
 
- # Virtual environments
- .venv/
- venv/
- env/
- ENV/
- venv.bak/
- .Python
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+venv.bak/
+.Python
 
- # Installer logs
- *pip-log.txt
- *pip-delete-this-directory.txt
+# Installer logs
+*pip-log.txt
+*pip-delete-this-directory.txt
 
- # Unit test / coverage reports
- .pytest_cache/
- .tox/
- *.cover
- *.coverage
- *.coverage.*
- htmlcov/
- .hypothesis/
+# Unit test / coverage reports
+.pytest_cache/
+.tox/
+*.cover
+*.coverage
+*.coverage.*
+htmlcov/
+.hypothesis/
 
- # Translations
- *.mo
- *.pot
+# Translations
+*.mo
+*.pot
 
- # Django stuff:
- *.log
- local_settings.py
- db.sqlite3
- db.sqlite3-journal
+# Django stuff:
+*.log
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
 
- # Flask stuff:
- instance/
- .webassets-cache
+# Flask stuff:
+instance/
+.webassets-cache
 
- # Jupyter Notebook
- .ipynb_checkpoints
+# Jupyter Notebook
+.ipynb_checkpoints
 
- # IPython
- profile_default/
- ipython_config.py
+# IPython
+profile_default/
+ipython_config.py
 
- # pyenv
- python-version
+# pyenv
+python-version
 
- # mypy
- .mypy_cache/
+# mypy
+.mypy_cache/
 
- # VS Code
- .vscode/
+# VS Code
+.vscode/
 
- # IDEs
- .idea/
- *.sublime-project
- *.sublime-workspace
+# IDEs
+.idea/
+*.sublime-project
+*.sublime-workspace
 
- # OS files
- .DS_Store
- Thumbs.db
+# OS files
+.DS_Store
+Thumbs.db
 
- # Environment variables files
- .env
- .env.*
- env.local
+# Environment variables files
+.env
+.env.*
+env.local
 
- # Streamlit
- # Streamlit stores credentials and settings in .streamlit/ by default
- .streamlit/
+# Streamlit
+# Streamlit stores credentials and settings in .streamlit/ by default
+.streamlit/
 
- # Airflow
- # Ignore airflow DB, logs, and PID/webserver files
- airflow.cfg
- airflow.db
- webserver.pid
- logs/
- airflow-sqlite.db
+# Airflow
+# Ignore airflow DB, logs, and PID/webserver files
+airflow.cfg
+airflow.db
+webserver.pid
+logs/
+airflow-sqlite.db
 
- # Dash / Frontend
- # Common frontend build artifacts and node modules
- node_modules/
- build/
- dist/
- npm-debug.log*
- yarn-debug.log*
- yarn-error.log*
+# Dash / Frontend
+# Common frontend build artifacts and node modules
+node_modules/
+build/
+dist/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
 
- # General artifacts
- *.log
- *.tmp
- *.temp
- *.bak
+# General artifacts
+*.log
+*.tmp
+*.temp
+*.bak
 
- # Notebook output and checkpoints
- *.nbconvert.ipynb
+# Notebook output and checkpoints
+*.nbconvert.ipynb
 
- # Local data caches (uncomment if you want to ignore local data folders)
- # data/
+# Local data caches (uncomment if you want to ignore local data folders)
+# data/
 
- # Ignore secrets and keys
- *.pem
- *.key
- secrets.json
+# Ignore secrets and keys
+*.pem
+*.key
+secrets.json
 
 # dbt
 neighbourhood_scout/dbt/target/
@@ -126,4 +126,4 @@ neighbourhood_scout/dbt/logs/
 neighbourhood_scout/dashapp/assets/
 neighbourhood_scout/dashapp/__pycache__/
 
- # End of .gitignore
+# End of .gitignore
