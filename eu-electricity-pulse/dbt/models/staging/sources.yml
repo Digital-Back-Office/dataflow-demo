@@ -1,0 +1,14 @@
+version: 2
+
+sources:
+  - name: raw
+    schema: raw
+    tables:
+      - name: zone_prices_hourly
+        description: Raw hourly day-ahead electricity prices per ENTSO-E bidding zone
+
+  - name: dim
+    schema: dim
+    tables:
+      - name: bidding_zones
+        description: Static dimension of 41 ENTSO-E bidding zones with lat/lon centroids
