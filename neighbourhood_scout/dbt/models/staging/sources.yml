@@ -1,0 +1,8 @@
+version: 2
+
+sources:
+  - name: ukns
+    schema: public
+    tables:
+      - name: crime_data
+      - name: hygiene_data

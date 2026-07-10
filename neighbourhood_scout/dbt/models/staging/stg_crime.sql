@@ -8,4 +8,4 @@ select
     month,
     outcome_category,
     geom
-from {{ ref('crime_data') }}
+from {{ source('ukns', 'crime_data') }}

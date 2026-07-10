@@ -11,4 +11,4 @@ select
     cast(confidence_score as float) as confidence_score,
     cast(distance as float) as distance,
     geom
-from {{ ref('hygiene_data') }}
+from {{ source('ukns', 'hygiene_data') }}
