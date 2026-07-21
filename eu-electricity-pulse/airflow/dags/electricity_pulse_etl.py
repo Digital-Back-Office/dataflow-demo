@@ -1,8 +1,4 @@
 from datetime import datetime, timedelta
-import json
-import requests
-import psycopg2
-from psycopg2.extras import execute_values
 
 from airflow import DAG
 from airflow.models import Variable
@@ -84,6 +80,7 @@ CREATE TABLE IF NOT EXISTS raw.zone_prices_hourly (
 
 
 def _get_conn():
+    import psycopg2
     c = BaseHook.get_connection(DB_CONN_ID)
     return psycopg2.connect(
         host=c.host, port=c.port or 5432,
@@ -92,6 +89,7 @@ def _get_conn():
 
 
 def seed_zone_dimension(**ctx):
+    from psycopg2.extras import execute_values
     with _get_conn() as conn, conn.cursor() as cur:
         execute_values(
             cur,
@@ -112,6 +110,9 @@ def seed_zone_dimension(**ctx):
 
 
 def fetch_and_load_prices(**ctx):
+    import requests
+    import psycopg2
+    from psycopg2.extras import execute_values
     """
     Fetch prices for both today and tomorrow in a single run.
 
