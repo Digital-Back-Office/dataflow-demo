@@ -1,14 +1,19 @@
--- Zone-to-zone price spread matrix for a chosen delivery date and hour
--- Used to power the 41×41 arbitrage heatmap
-with latest as (
-    select max(delivery_date) as max_date
+-- Zone-to-zone price spread matrix for today's delivery date.
+-- Prefers CURRENT_DATE, falls back to latest available so the mart works
+-- before today's DAG run completes.
+with target_date as (
+    select
+        case
+            when max(delivery_date) >= current_date then current_date
+            else max(delivery_date)
+        end as target_date
     from {{ ref('stg_zone_prices') }}
 ),
 
 prices as (
     select p.zone_code, p.delivery_hour, p.price_eur_mwh
     from {{ ref('stg_zone_prices') }} p
-    join latest l on p.delivery_date = l.max_date
+    join target_date td on p.delivery_date = td.target_date
 )
 
 select
