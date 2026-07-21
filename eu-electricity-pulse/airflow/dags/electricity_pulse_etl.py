@@ -183,10 +183,12 @@ def fetch_and_load_prices(**ctx):
 with DAG(
     dag_id="electricity_pulse_etl",
     description="Daily ingest of EU day-ahead electricity prices from euenergy.live into PostgreSQL",
-    # 13:00 UTC = 15:00 CEST / 14:00 CET — safely after ENTSO-E publishes in all seasons.
-    # ENTSO-E auction results land ~10:45–10:57 UTC (summer) or ~11:45–11:57 UTC (winter).
-    # Each run fetches both today's delivery prices AND tomorrow's (just-auctioned) prices.
-    schedule_interval="0 13 * * *",
+    # 13:30 UTC = 15:30 CEST / 14:30 CET.
+    # ENTSO-E auction results land ~10:45–11:00 UTC (summer/CEST) or ~11:45–12:00 UTC (winter/CET).
+    # euenergy.live has no public SLA for ingestion lag after ENTSO-E publishes.
+    # 13:30 UTC gives ~2.5hr buffer in summer and ~1.5hr in winter — enough to cover
+    # typical auction delays plus an undocumented euenergy.live ingestion window.
+    schedule_interval="30 13 * * *",
     start_date=datetime(2024, 1, 1),
     catchup=False,
     max_active_runs=1,
