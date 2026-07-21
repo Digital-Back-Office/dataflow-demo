@@ -923,32 +923,64 @@ app.layout = html.Div(
 )
 
 # ══════════════════════════════════════════════════════════════════════════
-# ROUTING
+# ROUTING  (clientside — zero server round-trip, instant nav switch)
 # ══════════════════════════════════════════════════════════════════════════
 
-@callback(
-    Output("active-page","data"),
-    [Input(f"nav-{pid}","n_clicks") for pid,_ in NAV] +
-    [Input(f"home-nav-{pid}","n_clicks") for pid in _HOME_NAV],
-    prevent_initial_call=True,
-)
-def switch_page(*_):
-    ctx = dash.callback_context
-    if not ctx.triggered:
-        return "home"
-    btn = ctx.triggered[0]["prop_id"].split(".")[0]
-    return btn.replace("home-nav-","") if btn.startswith("home-nav-") else btn.replace("nav-","")
+_NAV_ACTIVE_JS   = {"padding":"0 20px","height":"58px","border":"none","outline":"none",
+                    "cursor":"pointer","background":"none","fontSize":"0.8rem",
+                    "letterSpacing":"0.04em","fontFamily":"Inter,sans-serif",
+                    "display":"flex","alignItems":"center","transition":"color 0.15s",
+                    "color":"#e8edf5","fontWeight":"600","boxShadow":"inset 0 -2px 0 #3b82f6"}
+_NAV_INACTIVE_JS = {"padding":"0 20px","height":"58px","border":"none","outline":"none",
+                    "cursor":"pointer","background":"none","fontSize":"0.8rem",
+                    "letterSpacing":"0.04em","fontFamily":"Inter,sans-serif",
+                    "display":"flex","alignItems":"center","transition":"color 0.15s",
+                    "color":"#6b7a99","fontWeight":"400","boxShadow":"none"}
 
+import json as _json
+_NAV_PIDS_JS = _json.dumps([pid for pid, _ in NAV])
 
-@callback(
-    [Output(f"page-{pid}","style") for pid,_ in NAV] +
-    [Output(f"nav-{pid}","style")  for pid,_ in NAV],
-    Input("active-page","data"),
+app.clientside_callback(
+    f"""
+    function() {{
+        var ctx = window.dash_clientside.callback_context;
+        var page = 'home';
+        if (ctx && ctx.triggered && ctx.triggered.length > 0) {{
+            var btn = ctx.triggered[0].prop_id.split('.')[0];
+            if (btn.startsWith('home-nav-')) {{
+                page = btn.replace('home-nav-', '');
+            }} else if (btn.startsWith('nav-')) {{
+                page = btn.replace('nav-', '');
+            }}
+        }}
+        var navPids = {_NAV_PIDS_JS};
+        var pageStyles = navPids.map(function(p) {{
+            return p === page
+                ? {{display: 'block', animation: 'pageIn 0.15s ease-out'}}
+                : {{display: 'none'}};
+        }});
+        var base = {{
+            padding:'0 20px', height:'58px', border:'none', outline:'none',
+            cursor:'pointer', background:'none', fontSize:'0.8rem',
+            letterSpacing:'0.04em', fontFamily:'Inter,sans-serif',
+            display:'flex', alignItems:'center', transition:'color 0.15s'
+        }};
+        var navStyles = navPids.map(function(p) {{
+            return p === page
+                ? Object.assign({{}}, base, {{color:'#e8edf5', fontWeight:'600',
+                    boxShadow:'inset 0 -2px 0 #3b82f6'}})
+                : Object.assign({{}}, base, {{color:'#6b7a99', fontWeight:'400',
+                    boxShadow:'none'}});
+        }});
+        return [page].concat(pageStyles).concat(navStyles);
+    }}
+    """,
+    [Output("active-page", "data")] +
+    [Output(f"page-{pid}", "style") for pid, _ in NAV] +
+    [Output(f"nav-{pid}",  "style") for pid, _ in NAV],
+    [Input(f"nav-{pid}", "n_clicks") for pid, _ in NAV] +
+    [Input(f"home-nav-{pid}", "n_clicks") for pid in _HOME_NAV],
 )
-def toggle_pages(active):
-    page_styles = [{"display":"block"} if pid==active else {"display":"none"} for pid,_ in NAV]
-    nav_styles  = [NAV_ACTIVE if pid==active else NAV_INACTIVE for pid,_ in NAV]
-    return page_styles + nav_styles
 
 # ══════════════════════════════════════════════════════════════════════════
 # HOME CALLBACK

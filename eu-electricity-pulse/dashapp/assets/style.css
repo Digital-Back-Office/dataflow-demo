@@ -223,6 +223,21 @@ body {
   font-weight: 600;
 }
 
+/* ── Page transition ── */
+@keyframes pageIn {
+  from { opacity: 0; transform: translateY(5px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Card loading pulse ── */
+@keyframes cardPulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.45; }
+}
+._dash-loading-callback > * {
+  animation: cardPulse 1.1s ease-in-out infinite;
+}
+
 /* ── SPINNER ── */
 ._dash-loading { background: transparent !important; }
 
