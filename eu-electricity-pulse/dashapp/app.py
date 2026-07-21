@@ -654,7 +654,7 @@ def page_home():
             ),
         ]),
 
-        html.Div(id="home-heroes"),
+        dcc.Loading(html.Div(id="home-heroes"), color=ACCENT),
 
         html.Div(style={"display":"flex","gap":"16px","marginBottom":"18px","flexWrap":"wrap"}, children=[
             html.Div(style={"flex":"1.5","minWidth":"300px"}, children=[
@@ -665,7 +665,7 @@ def page_home():
                         html.Div("What the data is telling us right now",
                                  style={"fontWeight":"700","fontSize":"0.92rem","color":TEXT}),
                     ]),
-                    html.Div(id="home-insights"),
+                    dcc.Loading(html.Div(id="home-insights"), color=ACCENT),
                 ], style={"marginBottom":"0","height":"100%","boxSizing":"border-box"}),
             ]),
             html.Div(style={"flex":"1","minWidth":"240px"}, children=[
@@ -676,7 +676,7 @@ def page_home():
                         html.Div("Cheapest vs Most Expensive",
                                  style={"fontWeight":"700","fontSize":"0.92rem","color":TEXT}),
                     ]),
-                    html.Div(id="home-leaderboard"),
+                    dcc.Loading(html.Div(id="home-leaderboard"), color=ACCENT),
                 ], style={"marginBottom":"0","height":"100%","boxSizing":"border-box"}),
             ]),
         ]),
@@ -695,7 +695,7 @@ def page_home():
                         dcc.Dropdown(id="home-country", options=country_opts, value="DE",
                                      clearable=False, style={"width":"220px","fontSize":"0.85rem","color":"#000"}),
                     ]),
-                    html.Div(id="home-quickpick"),
+                    dcc.Loading(html.Div(id="home-quickpick"), color=ACCENT),
                 ], style={"marginBottom":"0"}),
             ]),
             html.Div(style={"flex":"3","minWidth":"300px"}, children=[
@@ -919,10 +919,6 @@ app.layout = html.Div(
                        "display":"flex","alignItems":"stretch","height":"100%"},
                 children=[nav_btn(pid, lbl) for pid, lbl in NAV],
             ),
-            # Right: data freshness
-            html.Div(_freshness_label(), style={
-                "fontSize":"0.68rem","color":MUTED,"flexShrink":"0","whiteSpace":"nowrap",
-            }),
         ]),
 
         # ── Page container ───────────────────────────────────────────────
