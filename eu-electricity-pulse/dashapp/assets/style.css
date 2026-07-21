@@ -275,6 +275,24 @@ body {
   background: linear-gradient(90deg, #3b82f6, #6b7a99, #f87171);
 }
 
+/* ── Home nav cards ── */
+.home-nav-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s, background 0.15s;
+  width: 100%;
+  color: var(--text);
+  font-family: 'Inter', sans-serif;
+}
+.home-nav-card:hover {
+  border-color: rgba(59,130,246,0.5);
+  background: var(--accent-glow);
+}
+
 /* ── Anomaly badge ── */
 .anom-badge {
   display: inline-flex;
