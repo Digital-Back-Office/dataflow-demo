@@ -155,6 +155,17 @@ zone_opts    = load_zone_options()
 country_opts = load_country_options()
 latest_date  = dates[0] if dates else None
 
+def _freshness_label():
+    if not latest_date:
+        return "no data"
+    from datetime import date
+    today = date.today()
+    ld    = date.fromisoformat(str(latest_date))
+    delta = (today - ld).days
+    if delta == 0:   return f"data for today · {latest_date}"
+    if delta == 1:   return f"data through yesterday · {latest_date}"
+    return f"data through {latest_date} · {delta}d ago"
+
 # ══════════════════════════════════════════════════════════════════════════
 # SMART HOURS HELPERS
 # ══════════════════════════════════════════════════════════════════════════
@@ -908,6 +919,10 @@ app.layout = html.Div(
                        "display":"flex","alignItems":"stretch","height":"100%"},
                 children=[nav_btn(pid, lbl) for pid, lbl in NAV],
             ),
+            # Right: data freshness
+            html.Div(_freshness_label(), style={
+                "fontSize":"0.68rem","color":MUTED,"flexShrink":"0","whiteSpace":"nowrap",
+            }),
         ]),
 
         # ── Page container ───────────────────────────────────────────────

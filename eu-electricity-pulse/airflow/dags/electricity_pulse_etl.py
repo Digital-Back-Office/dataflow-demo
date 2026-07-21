@@ -112,64 +112,87 @@ def seed_zone_dimension(**ctx):
 
 
 def fetch_and_load_prices(**ctx):
+    """
+    Fetch prices for both today and tomorrow in a single run.
+
+    Day-ahead prices for D+1 are published by ENTSO-E around 11:00–12:00 UTC
+    (earlier in summer/CEST, later in winter/CET). Running at 13:00 UTC means
+    both today's delivery prices AND tomorrow's freshly-auctioned prices are
+    available. Storing both makes the dashboard show up-to-date data even if
+    one day's run is delayed or retried.
+    """
     api_key = Variable.get(API_SECRET_NAME)
     headers = {"Authorization": f"Bearer {api_key}"}
-    delivery_date = ctx["logical_date"].date()
+    logical_date = ctx["logical_date"].date()
 
-    rows = []
-    errors = []
+    # Fetch today (current delivery date) + tomorrow (just-published day-ahead)
+    targets = [
+        ("today",    logical_date),
+        ("tomorrow", logical_date + timedelta(days=1)),
+    ]
 
-    for zone_code, *_ in BIDDING_ZONES:
-        url = f"https://euenergy.live/api/v1/prices/today?zone={zone_code}"
-        try:
-            resp = requests.get(url, headers=headers, timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
+    total_rows, all_errors = 0, []
 
-            # API may return list or dict — normalise both
-            # Response shape: {"zone":..., "hours": [{"ts": "2026-07-10T00:00:00.000Z", "price": 45.2}, ...]}
-            hours = data.get("hours", [])
-            for item in hours:
-                ts = item.get("ts", "")
-                price = item.get("price")
-                if ts and price is not None:
-                    hour = int(ts[11:13])  # extract HH from ISO timestamp
-                    rows.append((zone_code, delivery_date, hour, float(price), "EUR/MWh"))
-        except Exception as e:
-            errors.append(f"{zone_code}: {e}")
-            print(f"WARNING: failed to fetch {zone_code}: {e}")
+    for slot, delivery_date in targets:
+        rows, errors = [], []
+        for zone_code, *_ in BIDDING_ZONES:
+            url = f"https://euenergy.live/api/v1/prices/{slot}?zone={zone_code}"
+            try:
+                resp = requests.get(url, headers=headers, timeout=15)
+                resp.raise_for_status()
+                data = resp.json()
+                hours = data.get("hours", [])
+                for item in hours:
+                    ts    = item.get("ts", "")
+                    price = item.get("price")
+                    if ts and price is not None:
+                        hour = int(ts[11:13])
+                        rows.append((zone_code, delivery_date, hour, float(price), "EUR/MWh"))
+            except Exception as e:
+                errors.append(f"{zone_code}/{slot}: {e}")
+                print(f"WARNING: failed to fetch {zone_code} ({slot}): {e}")
 
-    if not rows:
-        raise ValueError(f"No price rows fetched. Errors: {errors}")
+        if rows:
+            with _get_conn() as conn, conn.cursor() as cur:
+                execute_values(
+                    cur,
+                    """
+                    INSERT INTO raw.zone_prices_hourly
+                        (zone_code, delivery_date, delivery_hour, price_eur_mwh, currency)
+                    VALUES %s
+                    ON CONFLICT (zone_code, delivery_date, delivery_hour)
+                    DO UPDATE SET price_eur_mwh = EXCLUDED.price_eur_mwh,
+                                  ingested_at   = now()
+                    """,
+                    rows,
+                )
+                conn.commit()
+            print(f"[{slot}] Loaded {len(rows)} rows for {delivery_date}.")
+        else:
+            print(f"[{slot}] No rows for {delivery_date} — skipping write. Errors: {errors}")
 
-    with _get_conn() as conn, conn.cursor() as cur:
-        execute_values(
-            cur,
-            """
-            INSERT INTO raw.zone_prices_hourly
-                (zone_code, delivery_date, delivery_hour, price_eur_mwh, currency)
-            VALUES %s
-            ON CONFLICT (zone_code, delivery_date, delivery_hour)
-            DO UPDATE SET price_eur_mwh = EXCLUDED.price_eur_mwh,
-                          ingested_at   = now()
-            """,
-            rows,
-        )
-        conn.commit()
+        total_rows += len(rows)
+        all_errors += errors
 
-    print(f"Loaded {len(rows)} hourly price rows for {delivery_date}. Errors: {errors or 'none'}")
+    if total_rows == 0:
+        raise ValueError(f"No price rows fetched at all. Errors: {all_errors}")
+
+    print(f"Total loaded: {total_rows} rows. Errors: {all_errors or 'none'}")
 
 
 with DAG(
     dag_id="electricity_pulse_etl",
     description="Daily ingest of EU day-ahead electricity prices from euenergy.live into PostgreSQL",
-    schedule_interval="0 11 * * *",  # 13:00 CEST = 11:00 UTC
+    # 13:00 UTC = 15:00 CEST / 14:00 CET — safely after ENTSO-E publishes in all seasons.
+    # ENTSO-E auction results land ~10:45–10:57 UTC (summer) or ~11:45–11:57 UTC (winter).
+    # Each run fetches both today's delivery prices AND tomorrow's (just-auctioned) prices.
+    schedule_interval="0 13 * * *",
     start_date=datetime(2024, 1, 1),
     catchup=False,
     max_active_runs=1,
     default_args={
         "retries": 3,
-        "retry_delay": timedelta(minutes=5),
+        "retry_delay": timedelta(minutes=15),  # give euenergy.live time to ingest after ENTSO-E
         "owner": "dataflow",
     },
     tags=["electricity", "eu", "energy"],
