@@ -8,12 +8,7 @@ from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 
-_RUNTIME = os.environ.get("RUNTIME")
-_DBT_DIR = os.path.normpath(os.path.join(
-    os.path.dirname(__file__),
-    ".." if _RUNTIME else "../..",
-    "dbt",
-))
+_DBT_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "dbt"))
 
 DB_CONN_ID = "euenergy_db"
 API_SECRET_NAME = "euenergy_api_key"
