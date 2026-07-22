@@ -8,7 +8,7 @@ from airflow.operators.python import PythonOperator
 from airflow.operators.bash import BashOperator
 from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 
-_DBT_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "dbt"))
+_DBT_DIR_DEFAULT = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "..", "dbt"))
 
 DB_CONN_ID = "euenergy_db"
 API_SECRET_NAME = "euenergy_api_key"
@@ -222,7 +222,9 @@ with DAG(
 
     run_dbt = BashOperator(
         task_id="run_dbt",
-        bash_command=f"cd {_DBT_DIR} && dbt run",
+        bash_command=(
+            "cd \"{{ var.value.get('euenergy_dbt_dir', '" + _DBT_DIR_DEFAULT + "') }}\" && dbt run"
+        ),
     )
 
     create_schema >> seed_zones >> fetch_prices >> run_dbt
