@@ -128,6 +128,6 @@ neighbourhood_scout/dashapp/__pycache__/
 
 # End of .gitignore
 
-eu-electricity-pulse/dbt/target/
-eu-electricity-pulse/dbt/logs/
-eu-electricity-pulse/dbt/.user.yml
+eu-electricity-pulse/airflow/dags/dbt/target/
+eu-electricity-pulse/airflow/dags/dbt/logs/
+eu-electricity-pulse/airflow/dags/dbt/.user.yml
