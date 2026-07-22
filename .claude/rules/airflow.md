@@ -63,8 +63,21 @@ Define at the bottom of the file, after all task definitions:
 task_a >> task_b >> [task_c, task_d]
 ```
 
+## File and folder structure — non-negotiable
+
+- **dbt belongs inside `dags/`** — if dbt is run via this DAG, the dbt project must live at `airflow/dags/dbt/`. Never place it at the project root when Airflow is involved.
+- **All dependencies inside `dags/`** — data files, seed CSVs, SQL scripts, configs, or any other file referenced by a DAG must live inside `airflow/dags/` (at the same level as the DAG file or in a subdirectory). Never reference files outside `dags/` from a DAG.
+- **Relative paths only** — always resolve paths relative to the DAG file:
+  ```python
+  import os
+  DAG_DIR = os.path.dirname(os.path.abspath(__file__))
+  dbt_dir = os.path.join(DAG_DIR, "dbt")
+  data_dir = os.path.join(DAG_DIR, "data")
+  ```
+  Never use absolute paths. Airflow runs on a different server in production and absolute paths will break.
+
 ## What not to do
 - No database connections at module level (breaks DAG parsing)
 - No `time.sleep()` inside tasks (use sensors instead)
 - No broad `except Exception: pass` — let tasks fail visibly
-- No hardcoded file paths — use environment-aware path resolution
+- No hardcoded file paths — use `os.path.dirname(__file__)` relative resolution

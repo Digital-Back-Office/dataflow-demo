@@ -1,5 +1,26 @@
 # dataflow-demo
 
+---
+
+## STRICT RULES — Read and follow these before doing anything else
+
+### Git workflow — MUST run before starting any project work
+
+1. **Stash uncommitted changes** — run `git status`. If there are any uncommitted changes (staged or unstaged), stash them with a descriptive name: `git stash push -u -m "<project>: <short description of what was in progress>"`. Never discard or overwrite uncommitted work.
+2. **Checkout main and pull** — run `git checkout main && git pull origin main`.
+3. **Stop on conflicts** — if the pull produces merge conflicts, stop immediately and ask the user to resolve them. Do not attempt to auto-resolve conflicts.
+4. **Create a feature branch** — once main is clean and up to date, create a descriptive branch: `git checkout -b <project-name>/<short-description>` (e.g. `eu-electricity-pulse/add-dbt-models`). All project work goes on this branch.
+
+### Project structure rules — non-negotiable
+
+1. **dbt inside dags/ when run via Airflow.** If dbt is triggered from an Airflow DAG, the entire dbt project must live at `airflow/dags/dbt/`, not at the project root. There must be no top-level `dbt/` folder in projects that use Airflow + dbt together.
+
+2. **All Airflow dependencies co-located in dags/.** Any data files, SQL scripts, config files, seed CSVs, or other files referenced by a DAG must live inside `airflow/dags/` at the same level as the DAG file (or in a subdirectory of it). Never reference files outside the `dags/` directory from a DAG.
+
+3. **Relative paths only.** All file references within DAG code and dbt profiles must use paths relative to the DAG file (`os.path.dirname(__file__)` as the base). Never use absolute paths. Airflow in production runs on a different server where absolute paths will break.
+
+---
+
 ## What this repo is
 
 This is the official demo repository for [dataflow.zone](https://dataflow.zone) — a platform where users can host Airflow, Streamlit apps, Dash apps, and dbt projects with full infrastructure managed by Dataflow.
@@ -32,11 +53,13 @@ Each project uses one or more of these components:
 project-name/
 ├── airflow/
 │   └── dags/
+│       ├── my_dag.py
+│       ├── dbt/               # dbt lives HERE when run via Airflow — co-located with DAG files
+│       │   ├── dbt_project.yml
+│       │   └── models/
+│       └── data/              # any data files or static dependencies also go here
 ├── streamlit/          # or dashapp/
 │   └── app.py
-├── dbt/               # if transforms are needed
-│   ├── dbt_project.yml
-│   └── models/
 ├── requirements.txt
 └── README.md
 ```

@@ -4,6 +4,10 @@ paths: "**/dbt/**"
 
 # dbt conventions
 
+## Location when used with Airflow
+
+When dbt is run via an Airflow DAG, the dbt project must live at `airflow/dags/dbt/` — co-located with the DAG files. Do **not** place it at the project root. The `profiles.yml` must use a relative path or the `DBT_PROFILES_DIR` env var pointing to that directory.
+
 ## Project structure
 ```
 dbt/
