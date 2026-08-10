@@ -416,7 +416,6 @@ def enrich_rainfall(**context):
             GROUP BY s.bathing_water_id, s.latitude, s.longitude
         """, (interesting_ids,))
         site_rows = cur.fetchall()
-    pg_conn.autocommit = False
 
     upsert_sql = """
         INSERT INTO raw.site_rainfall (bathing_water_id, sample_date, precip_7d_mm, ingested_at)
