@@ -417,6 +417,10 @@ def enrich_rainfall(**context):
         """, (interesting_ids,))
         site_rows = cur.fetchall()
 
+    # Close the read connection — we'll open a fresh one for writes
+    # so the long HTTP loop doesn't hold an idle connection open.
+    pg_conn.close()
+
     upsert_sql = """
         INSERT INTO raw.site_rainfall (bathing_water_id, sample_date, precip_7d_mm, ingested_at)
         VALUES %s
@@ -426,6 +430,7 @@ def enrich_rainfall(**context):
     """
 
     enriched = 0
+    errors = 0
     for row in site_rows:
         bw_id = row["bathing_water_id"]
         lat = float(row["latitude"])
@@ -434,7 +439,6 @@ def enrich_rainfall(**context):
         if not sample_dates:
             continue
 
-        # Fetch the full span of dates in one Open-Meteo call
         min_date = min(sample_dates)
         max_date = max(sample_dates)
         start_str = str(min_date - td(days=RAINFALL_LOOKBACK_DAYS))
@@ -453,6 +457,7 @@ def enrich_rainfall(**context):
             meteo = resp.json()
         except Exception as e:
             logger.warning("Open-Meteo failed for %s: %s", bw_id, e)
+            errors += 1
             continue
 
         daily_dates = meteo.get("daily", {}).get("time", [])
@@ -468,13 +473,20 @@ def enrich_rainfall(**context):
             rows.append((bw_id, str(sd), round(total, 2), datetime.utcnow()))
 
         if rows:
-            with pg_conn.cursor() as cur:
-                psycopg2.extras.execute_values(cur, upsert_sql, rows)
-            pg_conn.commit()
-            enriched += len(rows)
+            # Open a fresh connection per site — avoids idle timeout over long HTTP loops
+            write_conn = psycopg2.connect(
+                host=db.host, port=db.port, dbname=db.schema,
+                user=db.login, password=db.password,
+            )
+            try:
+                with write_conn.cursor() as cur:
+                    psycopg2.extras.execute_values(cur, upsert_sql, rows)
+                write_conn.commit()
+                enriched += len(rows)
+            finally:
+                write_conn.close()
 
-    pg_conn.close()
-    logger.info("Rainfall enrichment complete. %d site-date rows upserted", enriched)
+    logger.info("Rainfall enrichment complete. %d rows upserted, %d sites skipped", enriched, errors)
 
 
 # --------------------------------------------------------------------------- #
@@ -524,10 +536,24 @@ with DAG(
         python_callable=enrich_rainfall,
     )
 
-    run_dbt = BashOperator(
+    def _run_dbt(**context):
+        import subprocess
+        env = _dbt_env()
+        result = subprocess.run(
+            ["dbt", "run", "--profiles-dir", "."],
+            cwd=DBT_DIR,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        logger.info(result.stdout)
+        if result.returncode != 0:
+            logger.error(result.stderr)
+            raise RuntimeError(f"dbt run failed (exit {result.returncode})")
+
+    run_dbt = PythonOperator(
         task_id="run_dbt",
-        bash_command=f"cd {DBT_DIR} && dbt run --profiles-dir .",
-        env=_dbt_env(),
+        python_callable=_run_dbt,
     )
 
     create_schema >> [sites, samples]
