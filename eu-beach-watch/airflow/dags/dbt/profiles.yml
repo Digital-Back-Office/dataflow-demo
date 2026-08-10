@@ -1,0 +1,15 @@
+# Credentials come from env vars exported by the Airflow DAG (_dbt_env()).
+# Nothing is hardcoded — the Airflow `beach_watch_db` connection is the source
+# of truth. Run locally with the same env vars set.
+beach_watch_db:
+  target: prod
+  outputs:
+    prod:
+      type: postgres
+      host: "{{ env_var('BEACH_WATCH_HOST') }}"
+      port: "{{ env_var('BEACH_WATCH_PORT') | int }}"
+      user: "{{ env_var('BEACH_WATCH_USER') }}"
+      password: "{{ env_var('BEACH_WATCH_PASSWORD') }}"
+      dbname: "{{ env_var('BEACH_WATCH_DBNAME') }}"
+      schema: marts
+      threads: 4

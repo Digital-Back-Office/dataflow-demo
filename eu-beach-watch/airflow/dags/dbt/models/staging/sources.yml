@@ -1,0 +1,12 @@
+version: 2
+
+sources:
+  - name: raw
+    schema: raw
+    tables:
+      - name: bathing_sites
+        description: EEA bathing-water site layer with 11 years of classifications
+      - name: samples
+        description: Per-sample E. coli and enterococci readings (Discodata)
+      - name: site_rainfall
+        description: 7-day cumulative rainfall per site/sample date (Open-Meteo)
