@@ -444,6 +444,8 @@ def enrich_rainfall(**context):
         start_str = str(min_date - td(days=RAINFALL_LOOKBACK_DAYS))
         end_str = str(max_date)
 
+        import time
+        time.sleep(0.5)  # stay within Open-Meteo free tier rate limits
         try:
             resp = requests.get(OPEN_METEO_URL, params={
                 "latitude": lat,
@@ -453,6 +455,14 @@ def enrich_rainfall(**context):
                 "daily": "precipitation_sum",
                 "timezone": "UTC",
             }, timeout=30)
+            if resp.status_code == 429:
+                logger.warning("Rate limited by Open-Meteo, backing off 60s for %s", bw_id)
+                time.sleep(60)
+                resp = requests.get(OPEN_METEO_URL, params={
+                    "latitude": lat, "longitude": lon,
+                    "start_date": start_str, "end_date": end_str,
+                    "daily": "precipitation_sum", "timezone": "UTC",
+                }, timeout=30)
             resp.raise_for_status()
             meteo = resp.json()
         except Exception as e:
