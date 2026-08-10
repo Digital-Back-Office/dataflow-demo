@@ -103,10 +103,6 @@ def _get_conn_str():
     return f"postgresql://{conn.login}:{conn.password}@{conn.host}:{conn.port}/{conn.schema}"
 
 
-def _get_sqlalchemy_engine():
-    from sqlalchemy import create_engine
-    return create_engine(_get_conn_str())
-
 
 def _dbt_env():
     conn = BaseHook.get_connection(DB_CONN_ID)
@@ -321,61 +317,63 @@ def identify_interesting_sites(**context):
     Selects: (a) sites with declining 5-year classification trend,
              (b) sites with high E.coli variance.
     Pushes list of bathing_water_id to XCom.
+    Uses raw psycopg2 throughout — no pandas/sqlalchemy mismatch.
     """
-    import pandas as pd
-    from sqlalchemy import text
-
-    engine = _get_sqlalchemy_engine()
-
-    # Score each site's classification trend over the last 5 years
-    site_sql = text("""
-        SELECT bathing_water_id, latitude, longitude,
-               class_2020, class_2021, class_2022, class_2023, class_2024
-        FROM raw.bathing_sites
-        WHERE latitude IS NOT NULL AND longitude IS NOT NULL
-    """)
+    import psycopg2
+    import psycopg2.extras
 
     def score(cls):
         mapping = {"excellent": 4, "good": 3, "sufficient": 2, "poor": 1}
         return mapping.get((cls or "").lower(), None)
 
-    with engine.connect() as c:
-        sites = pd.read_sql(site_sql, c)
-
-    if sites.empty:
-        context["ti"].xcom_push(key="interesting_sites", value=[])
-        return []
-
-    years = ["class_2020", "class_2021", "class_2022", "class_2023", "class_2024"]
-    for col in years:
-        sites[col + "_score"] = sites[col].apply(score)
-
-    score_cols = [c + "_score" for c in years]
-    sites["recent_mean"] = sites[score_cols].mean(axis=1)
-    sites["trend_delta"] = sites["class_2024_score"] - sites["class_2020_score"]
-
-    # Declining: delta < 0 (worse now than 4 years ago)
-    declining = sites[sites["trend_delta"] < 0].nsmallest(
-        INTERESTING_SITES_LIMIT // 2, "trend_delta"
+    conn = BaseHook.get_connection(DB_CONN_ID)
+    pg = psycopg2.connect(
+        host=conn.host, port=conn.port, dbname=conn.schema,
+        user=conn.login, password=conn.password,
     )
 
-    # High variance: stddev across 5 years is large
-    high_var_sql = text("""
-        SELECT bathing_water_id, stddev(ecoli_cfu) as ecoli_std
-        FROM raw.samples
-        WHERE ecoli_cfu IS NOT NULL
-        GROUP BY bathing_water_id
-        ORDER BY ecoli_std DESC NULLS LAST
-        LIMIT :lim
-    """)
-    with engine.connect() as c:
-        high_var = pd.read_sql(high_var_sql, c, params={"lim": INTERESTING_SITES_LIMIT // 2})
+    try:
+        with pg.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # (a) Declining sites: score last 5 classification years
+            cur.execute("""
+                SELECT bathing_water_id,
+                       class_2020, class_2021, class_2022, class_2023, class_2024
+                FROM raw.bathing_sites
+                WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+            """)
+            rows = cur.fetchall()
 
-    interesting_ids = list(set(
-        declining["bathing_water_id"].tolist() +
-        high_var["bathing_water_id"].tolist()
-    ))[:INTERESTING_SITES_LIMIT]
+        if not rows:
+            context["ti"].xcom_push(key="interesting_sites", value=[])
+            return []
 
+        scored = []
+        for r in rows:
+            s2020 = score(r["class_2020"])
+            s2024 = score(r["class_2024"])
+            if s2020 is not None and s2024 is not None:
+                scored.append((r["bathing_water_id"], s2024 - s2020))
+
+        # Most declined = most negative delta
+        scored.sort(key=lambda x: x[1])
+        declining_ids = [bw_id for bw_id, _ in scored[:INTERESTING_SITES_LIMIT // 2]]
+
+        # (b) High E.coli variance sites
+        with pg.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("""
+                SELECT bathing_water_id
+                FROM raw.samples
+                WHERE ecoli_cfu IS NOT NULL
+                GROUP BY bathing_water_id
+                ORDER BY stddev(ecoli_cfu) DESC NULLS LAST
+                LIMIT %s
+            """, (INTERESTING_SITES_LIMIT // 2,))
+            high_var_ids = [r["bathing_water_id"] for r in cur.fetchall()]
+
+    finally:
+        pg.close()
+
+    interesting_ids = list(set(declining_ids + high_var_ids))[:INTERESTING_SITES_LIMIT]
     logger.info("Identified %d interesting sites for rainfall enrichment", len(interesting_ids))
     context["ti"].xcom_push(key="interesting_sites", value=interesting_ids)
     return interesting_ids
@@ -389,9 +387,7 @@ def enrich_rainfall(**context):
     import requests
     import psycopg2
     import psycopg2.extras
-    import pandas as pd
-    from sqlalchemy import text
-    from datetime import date, timedelta as td
+    from datetime import timedelta as td
 
     interesting_ids = context["ti"].xcom_pull(
         task_ids="identify_interesting_sites", key="interesting_sites"
@@ -401,29 +397,25 @@ def enrich_rainfall(**context):
         logger.info("No interesting sites to enrich — skipping rainfall step")
         return
 
-    engine = _get_sqlalchemy_engine()
-
-    # Fetch site coords and their sample dates in one query
-    sites_sql = text("""
-        SELECT s.bathing_water_id, s.latitude, s.longitude,
-               array_agg(DISTINCT samp.sample_date ORDER BY samp.sample_date) AS sample_dates
-        FROM raw.bathing_sites s
-        JOIN raw.samples samp USING (bathing_water_id)
-        WHERE s.bathing_water_id = ANY(:ids)
-          AND s.latitude IS NOT NULL
-          AND samp.sample_date IS NOT NULL
-        GROUP BY s.bathing_water_id, s.latitude, s.longitude
-    """)
-    with engine.connect() as c:
-        sites_df = pd.read_sql(sites_sql, c, params={"ids": interesting_ids})
-
+    db = BaseHook.get_connection(DB_CONN_ID)
     pg_conn = psycopg2.connect(
-        host=BaseHook.get_connection(DB_CONN_ID).host,
-        port=BaseHook.get_connection(DB_CONN_ID).port,
-        dbname=BaseHook.get_connection(DB_CONN_ID).schema,
-        user=BaseHook.get_connection(DB_CONN_ID).login,
-        password=BaseHook.get_connection(DB_CONN_ID).password,
+        host=db.host, port=db.port, dbname=db.schema,
+        user=db.login, password=db.password,
     )
+
+    # Fetch site coords and their sample dates using raw psycopg2
+    with pg_conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute("""
+            SELECT s.bathing_water_id, s.latitude, s.longitude,
+                   array_agg(DISTINCT samp.sample_date ORDER BY samp.sample_date) AS sample_dates
+            FROM raw.bathing_sites s
+            JOIN raw.samples samp USING (bathing_water_id)
+            WHERE s.bathing_water_id = ANY(%s)
+              AND s.latitude IS NOT NULL
+              AND samp.sample_date IS NOT NULL
+            GROUP BY s.bathing_water_id, s.latitude, s.longitude
+        """, (interesting_ids,))
+        site_rows = cur.fetchall()
     pg_conn.autocommit = False
 
     upsert_sql = """
@@ -435,7 +427,7 @@ def enrich_rainfall(**context):
     """
 
     enriched = 0
-    for _, row in sites_df.iterrows():
+    for row in site_rows:
         bw_id = row["bathing_water_id"]
         lat = float(row["latitude"])
         lon = float(row["longitude"])
