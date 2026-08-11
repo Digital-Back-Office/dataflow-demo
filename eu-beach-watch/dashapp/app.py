@@ -258,7 +258,7 @@ def _add_highlight_marker(fig: go.Figure, highlight: dict) -> None:
 
 
 def build_map(df: pd.DataFrame, zoom: float = None, center: dict = None,
-              highlight: dict = None) -> go.Figure:
+              highlight: dict = None, uirevision: str = "stable") -> go.Figure:
     if df.empty:
         return empty_map()
 
@@ -290,7 +290,7 @@ def build_map(df: pd.DataFrame, zoom: float = None, center: dict = None,
             xanchor="left", x=0.01, bgcolor="rgba(255,255,255,0.9)",
             font=dict(size=12),
         ),
-        uirevision="stable",
+        uirevision=uirevision,
         paper_bgcolor="#f7f5f0",
     )
     _add_highlight_marker(fig, highlight)
@@ -642,24 +642,28 @@ app.layout = html.Div([
     Output("site-map", "figure"),
     Input("filter-country", "value"),
     Input("filter-water-type", "value"),
-    Input("site-map", "relayoutData"),
     Input("selected-site", "data"),
 )
-def update_map(countries, water_types, relayout, selected_site):
+def update_map(countries, water_types, selected_site):
+    """
+    Rebuilds the map only when filters or a search selection change — never
+    on pan/zoom. `uirevision` controls whether Plotly keeps the user's
+    current view or jumps to a new one: a constant value ("stable") means
+    "preserve whatever the user is looking at", while a value that changes
+    (keyed to the selected site) tells Plotly to apply the new center/zoom
+    we're passing in, so search selection can still navigate the map.
+    """
     triggered = dash.ctx.triggered_id
 
-    zoom, center = DEFAULT_ZOOM, DEFAULT_CENTER
     if triggered == "selected-site" and selected_site:
-        zoom = 12.5
-        center = {"lat": selected_site["lat"], "lon": selected_site["lon"]}
-    elif relayout:
-        if "mapbox.zoom" in relayout:
-            zoom = relayout["mapbox.zoom"]
-        if "mapbox.center" in relayout:
-            center = relayout["mapbox.center"]
+        zoom, center = 12.5, {"lat": selected_site["lat"], "lon": selected_site["lon"]}
+        uirevision = f"nav-{selected_site['bathing_water_id']}"
+    else:
+        zoom, center = DEFAULT_ZOOM, DEFAULT_CENTER
+        uirevision = "stable"
 
     df = get_scorecard(countries, water_types)
-    return build_map(df, zoom=zoom, center=center, highlight=selected_site)
+    return build_map(df, zoom=zoom, center=center, highlight=selected_site, uirevision=uirevision)
 
 
 @app.callback(
