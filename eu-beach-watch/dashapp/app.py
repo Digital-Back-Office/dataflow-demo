@@ -604,7 +604,7 @@ def find_beach_tab():
                 dcc.Checklist(
                     id="filter-water-type",
                     options=[{"label": " Sea beaches only", "value": "coastal"}],
-                    value=["coastal"],
+                    value=[],
                     inputStyle={"marginRight": "6px"},
                     style={"fontSize": "0.88rem", "color": "#5c5648"},
                 ),
@@ -612,7 +612,7 @@ def find_beach_tab():
             ),
             dbc.Col(
                 html.Span(
-                    "Untick to also show river, lake and estuary bathing sites.",
+                    "Includes river, lake and estuary bathing sites — tick to show sea beaches only.",
                     style={"fontSize": "0.8rem", "color": "#b0aa9c"},
                 ),
                 width="auto", className="d-flex align-items-center",
