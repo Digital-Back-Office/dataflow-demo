@@ -52,6 +52,20 @@ TREND_COPY = {
 DEFAULT_CENTER = {"lat": 48.5, "lon": 10.0}
 DEFAULT_ZOOM = 3.4
 
+# Below this zoom level, group nearby beaches into clusters instead of
+# plotting every individual dot — at continent/country scale, 22,000
+# unclustered points are unreadable and slow to render.
+CLUSTER_ZOOM_THRESHOLD = 6.5
+CLUSTER_BIN_DEGREES_FAR = 2.0    # zoom < 4
+CLUSTER_BIN_DEGREES_NEAR = 0.6   # 4 <= zoom < threshold
+
+WATER_TYPE_LABELS = {
+    "coastal": "Sea beach",
+    "river": "River",
+    "lake": "Lake",
+    "transitional": "Estuary",
+}
+
 COUNTRY_NAMES = {
     "AL": "Albania", "AT": "Austria", "BE": "Belgium", "BG": "Bulgaria", "CH": "Switzerland",
     "CY": "Cyprus", "CZ": "Czechia", "DE": "Germany", "DK": "Denmark", "EE": "Estonia",
@@ -95,12 +109,15 @@ def _read_sql(sql: str) -> pd.DataFrame:
 # --------------------------------------------------------------------------- #
 # Data access
 # --------------------------------------------------------------------------- #
-def fetch_scorecard(countries=None) -> pd.DataFrame:
+def fetch_scorecard(countries=None, water_types=None) -> pd.DataFrame:
     try:
         wheres = ["latitude IS NOT NULL", "longitude IS NOT NULL"]
         if countries:
             quoted = ",".join(f"'{c}'" for c in countries)
             wheres.append(f"country_code IN ({quoted})")
+        if water_types:
+            quoted = ",".join(f"'{t}'" for t in water_types)
+            wheres.append(f"water_type IN ({quoted})")
         return _read_sql(f"""
             SELECT bathing_water_id, name, country_code, water_type,
                    latitude, longitude, current_classification,
@@ -111,6 +128,23 @@ def fetch_scorecard(countries=None) -> pd.DataFrame:
     except Exception as e:
         logger.warning("fetch_scorecard failed: %s", e)
         return pd.DataFrame()
+
+
+from functools import lru_cache
+
+
+@lru_cache(maxsize=64)
+def _fetch_scorecard_cached(countries_key, water_types_key):
+    countries = list(countries_key) if countries_key else None
+    water_types = list(water_types_key) if water_types_key else None
+    return fetch_scorecard(countries, water_types)
+
+
+def get_scorecard(countries=None, water_types=None) -> pd.DataFrame:
+    """Cached scorecard lookup — map pan/zoom re-renders shouldn't hit the DB."""
+    c_key = tuple(sorted(countries)) if countries else None
+    w_key = tuple(sorted(water_types)) if water_types else None
+    return _fetch_scorecard_cached(c_key, w_key)
 
 
 def fetch_all_countries() -> list:
@@ -207,13 +241,66 @@ def empty_map():
     return fig
 
 
-def build_map(df: pd.DataFrame) -> go.Figure:
+def _cluster_sites(df: pd.DataFrame, zoom: float) -> pd.DataFrame:
+    """Bin sites into a lat/lon grid and summarise each cell: count + dominant
+    classification. Bin size shrinks as zoom increases so clusters break apart
+    smoothly instead of jumping straight to individual pins.
+    """
+    bin_deg = CLUSTER_BIN_DEGREES_FAR if zoom < 4 else CLUSTER_BIN_DEGREES_NEAR
+    d = df.copy()
+    d["lat_bin"] = (d["latitude"] / bin_deg).round() * bin_deg
+    d["lon_bin"] = (d["longitude"] / bin_deg).round() * bin_deg
+
+    def dominant(s):
+        m = s.mode()
+        return m.iat[0] if not m.empty else "Unknown"
+
+    grouped = d.groupby(["lat_bin", "lon_bin"]).agg(
+        count=("bathing_water_id", "count"),
+        dominant=("current_classification", dominant),
+    ).reset_index()
+    return grouped
+
+
+def build_map(df: pd.DataFrame, zoom: float = None, center: dict = None) -> go.Figure:
     if df.empty:
         return empty_map()
+
+    zoom = zoom if zoom is not None else DEFAULT_ZOOM
+    center = center or DEFAULT_CENTER
 
     df = df.copy()
     df["current_classification"] = df["current_classification"].fillna("Unknown")
 
+    if zoom < CLUSTER_ZOOM_THRESHOLD:
+        # Zoomed out: show cluster markers, not 22,000 individual dots.
+        clusters = _cluster_sites(df, zoom)
+        sizes = 14 + (clusters["count"] ** 0.5) * 2.2
+        sizes = sizes.clip(upper=46)
+        colors = clusters["dominant"].map(lambda c: MAP_COLORS.get(c, MAP_COLORS["Unknown"]))
+
+        fig = go.Figure(go.Scattermapbox(
+            lat=clusters["lat_bin"], lon=clusters["lon_bin"],
+            mode="markers+text",
+            marker=dict(size=sizes, color=colors, opacity=0.85),
+            text=clusters["count"].astype(str),
+            textfont=dict(size=11, color="white", family="Inter, sans-serif"),
+            hovertext=[f"{c} beaches nearby — mostly {d}"
+                      for c, d in zip(clusters["count"], clusters["dominant"])],
+            hoverinfo="text",
+            customdata=[["cluster"]] * len(clusters),
+        ))
+        fig.update_layout(
+            mapbox_style="carto-positron",
+            mapbox=dict(center=center, zoom=zoom),
+            margin=dict(l=0, r=0, t=0, b=0),
+            paper_bgcolor="#f7f5f0",
+            uirevision="stable",
+            showlegend=False,
+        )
+        return fig
+
+    # Zoomed in: individual sites.
     fig = px.scatter_mapbox(
         df,
         lat="latitude",
@@ -226,10 +313,12 @@ def build_map(df: pd.DataFrame) -> go.Figure:
         custom_data=["bathing_water_id"],
         opacity=0.85,
     )
-    fig.update_traces(marker={"size": 7})
+    for trace in fig.data:
+        trace.customdata = [[cid, "site"] for cid in trace.customdata[:, 0]]
+    fig.update_traces(marker={"size": 9})
     fig.update_layout(
         mapbox_style="carto-positron",
-        mapbox=dict(center=DEFAULT_CENTER, zoom=DEFAULT_ZOOM),
+        mapbox=dict(center=center, zoom=zoom),
         margin=dict(l=0, r=0, t=0, b=0),
         legend=dict(
             title="", orientation="h", yanchor="bottom", y=0.01,
@@ -477,6 +566,26 @@ def find_beach_tab():
 
         dbc.Row([
             dbc.Col(
+                dcc.Checklist(
+                    id="filter-water-type",
+                    options=[{"label": " Sea beaches only", "value": "coastal"}],
+                    value=["coastal"],
+                    inputStyle={"marginRight": "6px"},
+                    style={"fontSize": "0.88rem", "color": "#5c5648"},
+                ),
+                width="auto",
+            ),
+            dbc.Col(
+                html.Span(
+                    "Untick to also show river, lake and estuary bathing sites.",
+                    style={"fontSize": "0.8rem", "color": "#b0aa9c"},
+                ),
+                width="auto", className="d-flex align-items-center",
+            ),
+        ], className="mb-2 gx-2"),
+
+        dbc.Row([
+            dbc.Col(
                 dbc.Spinner(dcc.Graph(id="site-map", style={"height": "62vh", "borderRadius": "14px"},
                                       config={"scrollZoom": True}), color="success"),
                 width=12, lg=8,
@@ -557,10 +666,18 @@ app.layout = html.Div([
 @app.callback(
     Output("site-map", "figure"),
     Input("filter-country", "value"),
+    Input("filter-water-type", "value"),
+    Input("site-map", "relayoutData"),
 )
-def update_map(countries):
-    df = fetch_scorecard(countries)
-    return build_map(df)
+def update_map(countries, water_types, relayout):
+    zoom, center = DEFAULT_ZOOM, DEFAULT_CENTER
+    if relayout:
+        if "mapbox.zoom" in relayout:
+            zoom = relayout["mapbox.zoom"]
+        if "mapbox.center" in relayout:
+            center = relayout["mapbox.center"]
+    df = get_scorecard(countries, water_types)
+    return build_map(df, zoom=zoom, center=center)
 
 
 @app.callback(
@@ -572,11 +689,24 @@ def update_detail(click_data):
         return welcome_panel()
     try:
         point = click_data["points"][0]
-        bw_id = point["customdata"][0]
+        custom = point["customdata"]
+        marker_type = custom[1] if len(custom) > 1 else "site"
     except (KeyError, IndexError):
         return welcome_panel()
 
-    scorecard = fetch_scorecard()
+    if marker_type == "cluster":
+        return html.Div([
+            html.Div("🔍", style={"fontSize": "2.2rem", "textAlign": "center"}),
+            html.Div("Zoom in to see individual beaches", style={
+                "textAlign": "center", "fontWeight": 600, "color": "#2b2823", "marginTop": "8px",
+            }),
+            html.Div("Scroll or pinch to zoom into this area on the map.", style={
+                "textAlign": "center", "color": "#8a8477", "fontSize": "0.85rem",
+            }),
+        ], style={"padding": "60px 20px"})
+
+    bw_id = custom[0]
+    scorecard = get_scorecard()
     site_row = scorecard[scorecard["bathing_water_id"] == bw_id]
     if site_row.empty:
         return welcome_panel()
