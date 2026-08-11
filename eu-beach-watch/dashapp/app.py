@@ -758,7 +758,8 @@ def select_search_result(n_clicks_list, current_results):
 
     return (
         {"bathing_water_id": bw_id, "lat": float(row["latitude"]), "lon": float(row["longitude"])},
-        row["name"].title(),
+        "",   # clear the search box — filling it with the name would re-trigger
+              # update_search and re-open the dropdown with a single lingering row
         None,
     )
 
