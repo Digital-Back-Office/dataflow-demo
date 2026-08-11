@@ -216,7 +216,8 @@ def search_sites(query: str, limit: int = 8) -> pd.DataFrame:
     try:
         safe_q = query.replace("'", "''").upper()
         return _read_sql(f"""
-            SELECT bathing_water_id, name, country_code, current_classification
+            SELECT bathing_water_id, name, country_code, current_classification,
+                   latitude, longitude
             FROM marts.mart_site_scorecard
             WHERE UPPER(name) LIKE '%{safe_q}%'
             ORDER BY name
@@ -262,7 +263,31 @@ def _cluster_sites(df: pd.DataFrame, zoom: float) -> pd.DataFrame:
     return grouped
 
 
-def build_map(df: pd.DataFrame, zoom: float = None, center: dict = None) -> go.Figure:
+def _add_highlight_marker(fig: go.Figure, highlight: dict) -> None:
+    """Draw a distinct gold-ring marker over the selected search result so
+    it's unmistakable among any other nearby dots.
+    """
+    if not highlight:
+        return
+    fig.add_trace(go.Scattermapbox(
+        lat=[highlight["lat"]], lon=[highlight["lon"]],
+        mode="markers",
+        marker=dict(size=22, color="rgba(0,0,0,0)"),
+        hoverinfo="skip",
+        showlegend=False,
+    ))
+    # Outer ring + inner dot to make the selection pop without hiding colour.
+    fig.add_trace(go.Scattermapbox(
+        lat=[highlight["lat"]], lon=[highlight["lon"]],
+        mode="markers",
+        marker=dict(size=20, color="#f4b400", opacity=0.35),
+        hoverinfo="skip",
+        showlegend=False,
+    ))
+
+
+def build_map(df: pd.DataFrame, zoom: float = None, center: dict = None,
+              highlight: dict = None) -> go.Figure:
     if df.empty:
         return empty_map()
 
@@ -298,6 +323,7 @@ def build_map(df: pd.DataFrame, zoom: float = None, center: dict = None) -> go.F
             uirevision="stable",
             showlegend=False,
         )
+        _add_highlight_marker(fig, highlight)
         return fig
 
     # Zoomed in: individual sites.
@@ -328,6 +354,7 @@ def build_map(df: pd.DataFrame, zoom: float = None, center: dict = None) -> go.F
         uirevision="stable",
         paper_bgcolor="#f7f5f0",
     )
+    _add_highlight_marker(fig, highlight)
     return fig
 
 
@@ -509,6 +536,8 @@ app.index_string = """
             }
             .nav-tabs .nav-link { color: #8a8477; border: none; }
             .Select-control, .dash-dropdown .Select-control { border-radius: 10px !important; }
+            .search-result-item:hover { background-color: #f7f5f0; }
+            .search-result-item:last-child { border-bottom: none !important; }
         </style>
     </head>
     <body>
@@ -546,14 +575,20 @@ def find_beach_tab():
         dbc.Row([
             dbc.Col([
                 dbc.Label("Search by beach name", style={"fontWeight": 600, "fontSize": "0.85rem"}),
-                dcc.Input(
-                    id="search-box", type="text", placeholder="e.g. Nice, Palma, Zakynthos...",
-                    debounce=True, style={
-                        "width": "100%", "padding": "10px 14px", "borderRadius": "10px",
-                        "border": "1px solid #ddd6c4", "fontSize": "0.95rem",
-                    },
-                ),
-                html.Div(id="search-results", className="mt-2"),
+                html.Div([
+                    dcc.Input(
+                        id="search-box", type="text", placeholder="e.g. Nice, Palma, Zakynthos...",
+                        debounce=True, autoComplete="off", style={
+                            "width": "100%", "padding": "10px 14px", "borderRadius": "10px",
+                            "border": "1px solid #ddd6c4", "fontSize": "0.95rem",
+                        },
+                    ),
+                    html.Div(id="search-results", style={
+                        "position": "absolute", "top": "calc(100% + 4px)", "left": 0, "right": 0,
+                        "zIndex": 1000, "maxHeight": "320px", "overflowY": "auto",
+                        "boxShadow": "0 8px 24px rgba(0,0,0,0.12)", "borderRadius": "10px",
+                    }),
+                ], style={"position": "relative"}),
             ], width=12, lg=5, className="mb-3"),
             dbc.Col([
                 dbc.Label("Or browse by country", style={"fontWeight": 600, "fontSize": "0.85rem"}),
@@ -650,6 +685,7 @@ def top_picks_tab():
 
 
 app.layout = html.Div([
+    dcc.Store(id="selected-site"),
     header(),
     dbc.Container([
         dbc.Tabs([
@@ -668,23 +704,38 @@ app.layout = html.Div([
     Input("filter-country", "value"),
     Input("filter-water-type", "value"),
     Input("site-map", "relayoutData"),
+    Input("selected-site", "data"),
 )
-def update_map(countries, water_types, relayout):
+def update_map(countries, water_types, relayout, selected_site):
+    triggered = dash.ctx.triggered_id
+
     zoom, center = DEFAULT_ZOOM, DEFAULT_CENTER
-    if relayout:
+    if triggered == "selected-site" and selected_site:
+        zoom = 12.5
+        center = {"lat": selected_site["lat"], "lon": selected_site["lon"]}
+    elif relayout:
         if "mapbox.zoom" in relayout:
             zoom = relayout["mapbox.zoom"]
         if "mapbox.center" in relayout:
             center = relayout["mapbox.center"]
+
     df = get_scorecard(countries, water_types)
-    return build_map(df, zoom=zoom, center=center)
+    return build_map(df, zoom=zoom, center=center, highlight=selected_site)
 
 
 @app.callback(
     Output("site-detail-panel", "children"),
     Input("site-map", "clickData"),
+    Input("selected-site", "data"),
 )
-def update_detail(click_data):
+def update_detail(click_data, selected_site):
+    triggered = dash.ctx.triggered_id
+
+    if triggered == "selected-site":
+        if not selected_site:
+            return welcome_panel()
+        return _render_site_detail(selected_site["bathing_water_id"])
+
     if not click_data:
         return welcome_panel()
     try:
@@ -705,7 +756,10 @@ def update_detail(click_data):
             }),
         ], style={"padding": "60px 20px"})
 
-    bw_id = custom[0]
+    return _render_site_detail(custom[0])
+
+
+def _render_site_detail(bw_id):
     scorecard = get_scorecard()
     site_row = scorecard[scorecard["bathing_water_id"] == bw_id]
     if site_row.empty:
@@ -729,7 +783,10 @@ def update_search(query):
         return None
     results = search_sites(query)
     if results.empty:
-        return html.Div("No beaches found.", style={"color": "#8a8477", "fontSize": "0.85rem"})
+        return html.Div("No beaches found.", style={
+            "backgroundColor": "white", "borderRadius": "10px", "border": "1px solid #eee6d8",
+            "padding": "10px", "color": "#8a8477", "fontSize": "0.85rem",
+        })
 
     items = []
     for _, r in results.iterrows():
@@ -739,12 +796,40 @@ def update_search(query):
             html.Span(r["name"].title(), style={"fontWeight": 600}),
             html.Span(f"  ·  {COUNTRY_NAMES.get(r['country_code'], r['country_code'])}",
                      style={"color": "#8a8477", "fontSize": "0.85rem"}),
-        ], style={"padding": "8px 10px", "borderBottom": "1px solid #f0ece0"}))
+        ], id={"type": "search-result", "index": r["bathing_water_id"]}, n_clicks=0, style={
+            "padding": "10px 12px", "borderBottom": "1px solid #f0ece0", "cursor": "pointer",
+        }, className="search-result-item"))
 
     return html.Div(items, style={
         "backgroundColor": "white", "borderRadius": "10px",
         "border": "1px solid #eee6d8",
     })
+
+
+@app.callback(
+    Output("selected-site", "data"),
+    Output("search-box", "value"),
+    Output("search-results", "children", allow_duplicate=True),
+    Input({"type": "search-result", "index": dash.ALL}, "n_clicks"),
+    State("search-results", "children"),
+    prevent_initial_call=True,
+)
+def select_search_result(n_clicks_list, current_results):
+    if not any(n_clicks_list) or not dash.ctx.triggered_id:
+        return dash.no_update, dash.no_update, dash.no_update
+
+    bw_id = dash.ctx.triggered_id["index"]
+    scorecard = get_scorecard()
+    row = scorecard[scorecard["bathing_water_id"] == bw_id]
+    if row.empty:
+        return dash.no_update, dash.no_update, dash.no_update
+    row = row.iloc[0]
+
+    return (
+        {"bathing_water_id": bw_id, "lat": float(row["latitude"]), "lon": float(row["longitude"])},
+        row["name"].title(),
+        None,
+    )
 
 
 @app.callback(
