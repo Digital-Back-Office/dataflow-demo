@@ -433,8 +433,6 @@ def verdict_card(site_row, timeline, samples=None, extras=None,
     confidence = _testing_confidence_line(samples)
     confidence_line, confidence_caveat = confidence if confidence else (None, None)
 
-    profile_link = extras.get("bw_profile_link")
-
     return html.Div([
         html.Div([
             html.Span(info["emoji"], style={"fontSize": "2.2rem", "marginRight": "12px"}),
@@ -473,16 +471,6 @@ def verdict_card(site_row, timeline, samples=None, extras=None,
                 "fontSize": "0.78rem", "color": "#b0842a", "marginTop": "2px",
             }) if confidence_caveat else None,
         ], className="mb-3") if confidence_line else None,
-
-        # Official local info link — the one genuinely new source of info.
-        html.A(
-            [html.Span("📄 ", style={"marginRight": "4px"}), "Official local beach info"],
-            href=profile_link, target="_blank", rel="noopener noreferrer",
-            style={
-                "display": "inline-block", "fontSize": "0.85rem", "color": "#2176d2",
-                "textDecoration": "none", "marginBottom": "14px", "fontWeight": 600,
-            },
-        ) if profile_link else None,
 
         html.Div("Quality over the last 11 years", style={
             "fontSize": "0.8rem", "fontWeight": 600, "color": "#8a8477",
