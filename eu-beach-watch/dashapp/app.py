@@ -198,19 +198,30 @@ def fetch_site_extras(bathing_water_id: str) -> dict:
         return {}
 
 
-def fetch_top_picks(country=None, limit: int = 12) -> pd.DataFrame:
-    """Best beaches to visit: Excellent + stable/improving, optionally in one country."""
+def fetch_top_picks(countries=None, water_types=None, hidden_gems_only=False,
+                    limit: int = 18) -> pd.DataFrame:
+    """Best beaches to visit: Excellent + stable/improving, optionally filtered
+    by country, water type, and/or restricted to hidden gems only."""
     try:
         where = ["current_classification = 'Excellent'",
                  "trend_direction != 'degrading'"]
-        if country:
-            where.append(f"country_code = '{country}'")
+        if countries:
+            quoted = ",".join(f"'{c}'" for c in countries)
+            where.append(f"country_code IN ({quoted})")
+        if water_types:
+            quoted = ",".join(f"'{t}'" for t in water_types)
+            where.append(f"water_type IN ({quoted})")
+        if hidden_gems_only:
+            where.append("hidden_gem IS TRUE")
+        # RANDOM() instead of alphabetical — sorting by name always surfaced
+        # the same handful of beaches starting with "A" on every load.
+        # hidden_gem still sorts first so gems aren't randomised out of view.
         return _read_sql(f"""
             SELECT name, country_code, water_type, trend_direction, hidden_gem,
                    bathing_water_id, latitude, longitude
             FROM marts.mart_site_scorecard
             WHERE {' AND '.join(where)}
-            ORDER BY hidden_gem DESC, name
+            ORDER BY hidden_gem DESC, RANDOM()
             LIMIT {int(limit)}
         """)
     except Exception as e:
@@ -612,7 +623,7 @@ def find_beach_tab():
                 dcc.Checklist(
                     id="filter-water-type",
                     options=[{"label": " Sea beaches only", "value": "coastal"}],
-                    value=[],
+                    value=["coastal"],
                     inputStyle={"marginRight": "6px"},
                     style={"fontSize": "0.88rem", "color": "#5c5648"},
                 ),
@@ -620,7 +631,7 @@ def find_beach_tab():
             ),
             dbc.Col(
                 html.Span(
-                    "Includes river, lake and estuary bathing sites — tick to show sea beaches only.",
+                    "Untick to also show river, lake and estuary bathing sites.",
                     style={"fontSize": "0.8rem", "color": "#b0aa9c"},
                 ),
                 width="auto", className="d-flex align-items-center",
@@ -659,6 +670,35 @@ def top_picks_tab():
                 style={"color": "#8a8477", "fontSize": "0.88rem", "marginBottom": "14px"},
             ),
         ]),
+
+        dbc.Row([
+            dbc.Col([
+                dbc.Label("Country", style={"fontWeight": 600, "fontSize": "0.85rem"}),
+                dcc.Dropdown(
+                    id="picks-filter-country", options=COUNTRY_OPTIONS, multi=True,
+                    placeholder="All countries",
+                ),
+            ], width=12, md=5, className="mb-2"),
+            dbc.Col([
+                dbc.Label("Water type", style={"fontWeight": 600, "fontSize": "0.85rem"}),
+                dcc.Checklist(
+                    id="picks-filter-water-type",
+                    options=[{"label": " Sea beaches only", "value": "coastal"}],
+                    value=[], inputStyle={"marginRight": "6px"},
+                    style={"fontSize": "0.88rem", "color": "#5c5648", "marginTop": "6px"},
+                ),
+            ], width=12, md=4, className="mb-2"),
+            dbc.Col([
+                dbc.Label(" ", style={"display": "block", "fontSize": "0.85rem"}),
+                dcc.Checklist(
+                    id="picks-filter-gems",
+                    options=[{"label": " 💎 Hidden gems only", "value": "gems"}],
+                    value=[], inputStyle={"marginRight": "6px"},
+                    style={"fontSize": "0.88rem", "color": "#5c5648", "marginTop": "6px"},
+                ),
+            ], width=12, md=3, className="mb-2"),
+        ], className="mb-2"),
+
         dbc.Row(id="top-picks-grid", className="g-2"),
 
         html.Hr(style={"margin": "32px 0", "borderColor": "#eee6d8"}),
@@ -674,21 +714,28 @@ def top_picks_tab():
                 "especially at beaches flagged 🌧️ Rain-sensitive on their beach card.",
                 style={"color": "#5c5648", "fontSize": "0.9rem", "marginTop": "6px", "maxWidth": "640px"},
             ),
-        ], className="mb-4"),
+        ]),
+    ])
 
+
+def country_comparison_tab():
+    return html.Div([
         html.Div([
             html.Div("🗺️ How countries compare", style={
-                "fontSize": "1.15rem", "fontWeight": 700, "color": "#2b2823",
+                "fontSize": "1.15rem", "fontWeight": 700, "color": "#2b2823", "marginTop": "20px",
             }),
             html.Div(
                 "Share of monitored beaches rated Excellent, most recent season.",
-                style={"color": "#8a8477", "fontSize": "0.88rem", "marginBottom": "10px"},
+                style={"color": "#8a8477", "fontSize": "0.88rem", "marginBottom": "14px"},
             ),
+        ]),
+        html.Div(
             dbc.Spinner(dcc.Graph(id="country-strip", config={"displayModeBar": False})),
-        ], style={
-            "backgroundColor": "white", "borderRadius": "14px", "border": "1px solid #eee6d8",
-            "padding": "20px", "marginTop": "10px",
-        }),
+            style={
+                "backgroundColor": "white", "borderRadius": "14px", "border": "1px solid #eee6d8",
+                "padding": "20px",
+            },
+        ),
     ])
 
 
@@ -699,6 +746,7 @@ app.layout = html.Div([
         dbc.Tabs([
             dbc.Tab(find_beach_tab(), label="Find a Beach", tab_id="tab-find"),
             dbc.Tab(top_picks_tab(), label="Top Picks", tab_id="tab-picks"),
+            dbc.Tab(country_comparison_tab(), label="Country Comparison", tab_id="tab-country"),
         ], id="tabs", active_tab="tab-find", className="mt-2"),
     ], fluid="lg", className="pb-5"),
 ])
@@ -837,13 +885,22 @@ def select_search_result(n_clicks_list, current_results):
 @app.callback(
     Output("top-picks-grid", "children"),
     Input("tabs", "active_tab"),
+    Input("picks-filter-country", "value"),
+    Input("picks-filter-water-type", "value"),
+    Input("picks-filter-gems", "value"),
 )
-def update_top_picks(active_tab):
+def update_top_picks(active_tab, countries, water_types, gems):
     if active_tab != "tab-picks":
         return dash.no_update
-    df = fetch_top_picks(limit=18)
+    df = fetch_top_picks(
+        countries=countries, water_types=water_types,
+        hidden_gems_only=bool(gems), limit=18,
+    )
     if df.empty:
-        return html.Div("No data available yet.", style={"color": "#8a8477"})
+        return html.Div(
+            "No beaches match these filters — try widening your search.",
+            style={"color": "#8a8477"},
+        )
     return [beach_card(row) for _, row in df.iterrows()]
 
 
@@ -852,7 +909,7 @@ def update_top_picks(active_tab):
     Input("tabs", "active_tab"),
 )
 def update_country_strip(active_tab):
-    if active_tab != "tab-picks":
+    if active_tab != "tab-country":
         return dash.no_update
     df = fetch_country_summary()
     return build_country_strip(df)
