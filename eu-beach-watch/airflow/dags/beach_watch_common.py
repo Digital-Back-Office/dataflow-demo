@@ -29,6 +29,13 @@ DISCODATA_URL = "https://discodata.eea.europa.eu/sql"
 DISCODATA_TABLE = "[WISE_BWD].[latest].[timeseries_MonitoringResult]"
 DISCODATA_PAGE_SIZE = 1000
 
+# Demo window used by both the annual ingest DAG and the standalone reload
+# script — NOT the full 2008+ history the source API can provide, which is
+# far more data (~2.85M rows) than this project needs. Single source of
+# truth here so the two callers can't drift out of sync.
+SAMPLE_START_YEAR = 2019
+SAMPLE_END_YEAR = 2024
+
 # qualityStatus = 2024, qualityStatus_minus1 = 2023, ..., minus10 = 2014
 QUAL_FIELD_TO_YEAR = {"qualityStatus": 2024}
 for _i in range(1, 11):

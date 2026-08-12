@@ -25,7 +25,7 @@ from airflow.hooks.base import BaseHook
 from airflow.operators.python import PythonOperator
 from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
 
-from beach_watch_common import CREATE_SCHEMA_SQL
+from beach_watch_common import CREATE_SCHEMA_SQL, SAMPLE_START_YEAR, SAMPLE_END_YEAR
 from beach_watch_common import ingest_sites as _ingest_sites_impl
 from beach_watch_common import ingest_samples as _ingest_samples_impl
 
@@ -39,8 +39,8 @@ DBT_DIR = os.path.join(DAG_DIR, "dbt")
 
 DB_CONN_ID = "beach_watch_db"
 
-SAMPLE_START_YEAR = 2019  # demo window for the annual DAG; full 2008+ history
-SAMPLE_END_YEAR = 2024    # is loaded once via scripts/reload_all_data.py
+# SAMPLE_START_YEAR / SAMPLE_END_YEAR live in beach_watch_common.py so this
+# DAG and scripts/reload_all_data.py always use the same demo window.
 
 OPEN_METEO_URL = "https://archive-api.open-meteo.com/v1/archive"
 RAINFALL_LOOKBACK_DAYS = 7

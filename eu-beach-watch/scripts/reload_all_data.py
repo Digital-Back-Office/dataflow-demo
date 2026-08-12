@@ -13,8 +13,10 @@ What it does:
   2. TRUNCATEs raw.bathing_sites and raw.samples.
   3. Re-ingests the full EEA site layer (~22,000 sites) with every attribute
      the ArcGIS API returns, not just the fields the app currently uses.
-  4. Re-ingests the FULL historical sample range (2008-2024) from Discodata,
-     capturing every attribute the API returns per sample.
+  4. Re-ingests samples for the SAME demo window the ingest DAG uses
+     (imported from beach_watch_ingest.py, currently 2019-2024 — NOT the
+     full 2008+ history, which is far more data than this project needs),
+     but now capturing every attribute the API returns per sample.
   5. Leaves raw.site_rainfall untouched — that's an Airflow-owned enrichment
      step (enrich_rainfall) that will repopulate itself on the next DAG run.
 
@@ -37,10 +39,10 @@ logger = logging.getLogger("reload_all_data")
 DAGS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "airflow", "dags")
 sys.path.insert(0, os.path.normpath(DAGS_DIR))
 
-from beach_watch_common import CREATE_SCHEMA_SQL, ingest_sites, ingest_samples  # noqa: E402
-
-FULL_BACKFILL_START_YEAR = 2008
-FULL_BACKFILL_END_YEAR = 2024
+from beach_watch_common import (  # noqa: E402
+    CREATE_SCHEMA_SQL, ingest_sites, ingest_samples,
+    SAMPLE_START_YEAR, SAMPLE_END_YEAR,
+)
 
 
 def get_connection_params():
@@ -84,9 +86,10 @@ def main():
     logger.info("Connecting to %s:%s/%s", params["host"], params["port"], params["dbname"])
 
     if not confirm(
-        "This will DELETE all rows in raw.bathing_sites and raw.samples, then "
-        "re-download and reload everything from EEA (~22k sites, ~2.8M samples "
-        "for the full 2008-2024 range). This can take 30-60+ minutes. Continue?"
+        f"This will DELETE all rows in raw.bathing_sites and raw.samples, then "
+        f"re-download and reload everything from EEA (~22k sites, samples for "
+        f"{SAMPLE_START_YEAR}-{SAMPLE_END_YEAR} — roughly 1-1.5M rows, not the "
+        f"full 2008+ history). This can take 10-20 minutes. Continue?"
     ):
         logger.info("Aborted.")
         return
@@ -110,10 +113,10 @@ def main():
     logger.info("Sites reloaded: %d", site_count)
 
     logger.info(
-        "Re-ingesting all samples, %d-%d (full attribute set) — this is the slow part...",
-        FULL_BACKFILL_START_YEAR, FULL_BACKFILL_END_YEAR,
+        "Re-ingesting samples, %d-%d (full attribute set) — this is the slow part...",
+        SAMPLE_START_YEAR, SAMPLE_END_YEAR,
     )
-    sample_count = ingest_samples(pg, FULL_BACKFILL_START_YEAR, FULL_BACKFILL_END_YEAR)
+    sample_count = ingest_samples(pg, SAMPLE_START_YEAR, SAMPLE_END_YEAR)
     logger.info("Samples reloaded: %d", sample_count)
 
     pg.close()
