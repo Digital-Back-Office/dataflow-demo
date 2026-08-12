@@ -159,8 +159,10 @@ def fetch_site_detail(bathing_water_id: str):
             WHERE bathing_water_id = '{safe_id}'
             ORDER BY class_year
         """)
+        # sample_status included so we can flag pre-season readings honestly —
+        # it is NOT a pass/fail signal, just sample collection context.
         samples = _read_sql(f"""
-            SELECT sample_date, ecoli_cfu, enterococci_cfu
+            SELECT sample_date, ecoli_cfu, enterococci_cfu, season, sample_status
             FROM raw.samples
             WHERE bathing_water_id = '{safe_id}'
               AND ecoli_cfu IS NOT NULL
@@ -170,6 +172,30 @@ def fetch_site_detail(bathing_water_id: str):
     except Exception as e:
         logger.warning("fetch_site_detail failed: %s", e)
         return pd.DataFrame(), pd.DataFrame()
+
+
+def fetch_site_extras(bathing_water_id: str) -> dict:
+    """Fields not yet surfaced in the dbt mart — pulled straight from raw.
+    Returns {} on any failure so callers can render without this info.
+    """
+    try:
+        safe_id = bathing_water_id.replace("'", "''")
+        df = _read_sql(f"""
+            SELECT country_name, bw_profile_link
+            FROM raw.bathing_sites
+            WHERE bathing_water_id = '{safe_id}'
+            LIMIT 1
+        """)
+        if df.empty:
+            return {}
+        row = df.iloc[0]
+        return {
+            "country_name": row.get("country_name") or None,
+            "bw_profile_link": row.get("bw_profile_link") or None,
+        }
+    except Exception as e:
+        logger.warning("fetch_site_extras failed: %s", e)
+        return {}
 
 
 def fetch_top_picks(country=None, limit: int = 12) -> pd.DataFrame:
@@ -356,8 +382,37 @@ def build_country_strip(df: pd.DataFrame) -> go.Figure:
 # --------------------------------------------------------------------------- #
 # UI component builders
 # --------------------------------------------------------------------------- #
-def verdict_card(site_row, timeline, hidden_gem=False, rainfall_sensitive=False):
+def _testing_confidence_line(samples: pd.DataFrame):
+    """Plain-language sample-count/freshness line. Purely factual — counts
+    and dates, no interpretation of pass/fail (the source data doesn't
+    actually carry a per-sample pass/fail flag, only lab methodology codes).
+    Returns None if there's nothing to say.
+    """
+    if samples is None or samples.empty:
+        return None
+
+    latest = samples.sort_values("sample_date").iloc[-1]
+    latest_season = latest.get("season")
+    season_samples = (samples[samples["season"] == latest_season]
+                      if latest_season is not None else samples)
+    count = len(season_samples)
+    last_date = latest["sample_date"]
+    last_date_str = last_date.strftime("%d %b %Y") if hasattr(last_date, "strftime") else str(last_date)
+
+    season_txt = f" in {int(latest_season)}" if latest_season is not None else ""
+    line = f"Tested {count} time{'s' if count != 1 else ''}{season_txt} — last checked {last_date_str}."
+
+    caveat = None
+    if latest.get("sample_status") == "preSeasonSample":
+        caveat = "Most recent sample was taken before the swimming season officially opened."
+
+    return line, caveat
+
+
+def verdict_card(site_row, timeline, samples=None, extras=None,
+                 hidden_gem=False, rainfall_sensitive=False):
     """The main answer card: is this beach safe to swim at, right now."""
+    extras = extras or {}
     classification = (timeline.iloc[-1]["classification"]
                       if not timeline.empty else site_row.get("current_classification") or "Unknown")
     info = CLASS_INFO.get(classification, CLASS_INFO["Unknown"])
@@ -372,6 +427,14 @@ def verdict_card(site_row, timeline, hidden_gem=False, rainfall_sensitive=False)
         badges.append(dbc.Badge("🌧️ Rain-sensitive", color="light", text_color="dark",
                                  style={"border": "1px solid #e0d8c8"}))
 
+    country_label = (extras.get("country_name")
+                     or COUNTRY_NAMES.get(site_row.get("country_code"), site_row.get("country_code", "")))
+
+    confidence = _testing_confidence_line(samples)
+    confidence_line, confidence_caveat = confidence if confidence else (None, None)
+
+    profile_link = extras.get("bw_profile_link")
+
     return html.Div([
         html.Div([
             html.Span(info["emoji"], style={"fontSize": "2.2rem", "marginRight": "12px"}),
@@ -380,7 +443,7 @@ def verdict_card(site_row, timeline, hidden_gem=False, rainfall_sensitive=False)
                     "fontSize": "1.15rem", "fontWeight": 700, "color": "#2b2823",
                     "lineHeight": "1.2",
                 }),
-                html.Div(COUNTRY_NAMES.get(site_row.get("country_code"), site_row.get("country_code", "")),
+                html.Div(country_label,
                          style={"fontSize": "0.85rem", "color": "#8a8477"}),
             ]),
         ], style={"display": "flex", "alignItems": "center", "marginBottom": "14px"}),
@@ -402,6 +465,24 @@ def verdict_card(site_row, timeline, hidden_gem=False, rainfall_sensitive=False)
         html.Div(t_detail, style={"fontSize": "0.85rem", "color": "#8a8477", "marginBottom": "14px"}),
 
         html.Div(badges, className="mb-3") if badges else None,
+
+        # Testing freshness/confidence — factual sample count + last-checked date.
+        html.Div([
+            html.Div(confidence_line, style={"fontSize": "0.82rem", "color": "#5c5648"}),
+            html.Div(confidence_caveat, style={
+                "fontSize": "0.78rem", "color": "#b0842a", "marginTop": "2px",
+            }) if confidence_caveat else None,
+        ], className="mb-3") if confidence_line else None,
+
+        # Official local info link — the one genuinely new source of info.
+        html.A(
+            [html.Span("📄 ", style={"marginRight": "4px"}), "Official local beach info"],
+            href=profile_link, target="_blank", rel="noopener noreferrer",
+            style={
+                "display": "inline-block", "fontSize": "0.85rem", "color": "#2176d2",
+                "textDecoration": "none", "marginBottom": "14px", "fontWeight": 600,
+            },
+        ) if profile_link else None,
 
         html.Div("Quality over the last 11 years", style={
             "fontSize": "0.8rem", "fontWeight": 600, "color": "#8a8477",
@@ -697,9 +778,10 @@ def _render_site_detail(bw_id):
         return welcome_panel()
     site_row = site_row.iloc[0]
 
-    timeline, _ = fetch_site_detail(bw_id)
+    timeline, samples = fetch_site_detail(bw_id)
+    extras = fetch_site_extras(bw_id)
     return verdict_card(
-        site_row, timeline,
+        site_row, timeline, samples, extras,
         hidden_gem=bool(site_row.get("hidden_gem")),
         rainfall_sensitive=bool(site_row.get("rainfall_sensitive")),
     )
