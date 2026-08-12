@@ -1,0 +1,24 @@
+name: 'eu_beach_watch'
+version: '1.0.0'
+config-version: 2
+
+profile: 'beach_watch_db'
+
+model-paths: ["models"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  eu_beach_watch:
+    staging:
+      materialized: view
+      schema: staging
+    intermediate:
+      materialized: view
+      schema: intermediate
+    marts:
+      materialized: table
+      schema: marts

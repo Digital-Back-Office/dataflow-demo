@@ -1,0 +1,919 @@
+"""
+EU Beach Water Quality Monitor — Dash app.
+
+Built for tourists planning a trip, not data analysts. Plain-language verdicts,
+a search-first layout, and visual card grids instead of raw data tables.
+
+Reads from the dbt marts (mart_site_scorecard, mart_country_rankings) and
+from raw.samples / staging.stg_bathing_sites for the per-site history.
+
+Deliberately uses a light, warm theme instead of the repo's usual DARKLY
+convention — this is a travel-decision tool for non-technical visitors,
+not an internal analytics dashboard, so it needs to read as trustworthy
+and inviting rather than "developer console".
+"""
+
+import logging
+import os
+
+import dash
+from dash import dcc, html, Input, Output, State
+import dash_bootstrap_components as dbc
+import plotly.graph_objs as go
+import plotly.express as px
+import pandas as pd
+
+logger = logging.getLogger(__name__)
+
+DB_CONN_ID = "beach_watch_db"
+
+# Plain-language classification copy — no jargon, no "class_score".
+CLASS_INFO = {
+    "Excellent":  {"emoji": "🟢", "color": "#1a9e5c", "bg": "#e8f8f0", "verdict": "Safe to swim",
+                   "detail": "Consistently excellent water quality. A great choice."},
+    "Good":       {"emoji": "🔵", "color": "#2176d2", "bg": "#e8f2fc", "verdict": "Safe to swim",
+                   "detail": "Good water quality overall."},
+    "Sufficient": {"emoji": "🟡", "color": "#c98a08", "bg": "#fdf3df", "verdict": "Generally OK",
+                   "detail": "Meets the minimum standard — check conditions if it's rained recently."},
+    "Poor":       {"emoji": "🔴", "color": "#d3402f", "bg": "#fbe9e7", "verdict": "Avoid swimming",
+                   "detail": "Water quality has failed standards. Consider a different beach."},
+    "Unknown":    {"emoji": "⚪", "color": "#8a8a8a", "bg": "#f1f1f1", "verdict": "No recent data",
+                   "detail": "We don't have a recent classification for this site."},
+}
+CLASS_ORDER = ["Excellent", "Good", "Sufficient", "Poor"]
+MAP_COLORS = {k: v["color"] for k, v in CLASS_INFO.items()}
+
+TREND_COPY = {
+    "improving": ("📈", "Getting better", "Water quality here has been improving over the last decade."),
+    "stable":    ("➡️", "Staying steady", "Water quality here has stayed consistent over the last decade."),
+    "degrading": ("📉", "Getting worse", "Water quality here has been declining — worth checking recent reports."),
+}
+
+DEFAULT_CENTER = {"lat": 48.5, "lon": 10.0}
+DEFAULT_ZOOM = 3.4
+
+WATER_TYPE_LABELS = {
+    "coastal": "Sea beach",
+    "river": "River",
+    "lake": "Lake",
+    "transitional": "Estuary",
+}
+
+COUNTRY_NAMES = {
+    "AL": "Albania", "AT": "Austria", "BE": "Belgium", "BG": "Bulgaria", "CH": "Switzerland",
+    "CY": "Cyprus", "CZ": "Czechia", "DE": "Germany", "DK": "Denmark", "EE": "Estonia",
+    "EL": "Greece", "ES": "Spain", "FI": "Finland", "FR": "France", "HR": "Croatia",
+    "HU": "Hungary", "IE": "Ireland", "IT": "Italy", "LT": "Lithuania", "LU": "Luxembourg",
+    "LV": "Latvia", "MT": "Malta", "NL": "Netherlands", "PL": "Poland", "PT": "Portugal",
+    "RO": "Romania", "SE": "Sweden", "SI": "Slovenia", "SK": "Slovakia",
+}
+
+
+# --------------------------------------------------------------------------- #
+# DB connection
+# --------------------------------------------------------------------------- #
+def get_engine():
+    db_url = os.environ.get("DATABASE_URL")
+    if db_url:
+        from sqlalchemy import create_engine
+        return create_engine(db_url)
+    try:
+        from airflow.hooks.base import BaseHook
+        from sqlalchemy import create_engine
+        conn = BaseHook.get_connection(DB_CONN_ID)
+        return create_engine(
+            f"postgresql://{conn.login}:{conn.password}@{conn.host}:{conn.port}/{conn.schema}"
+        )
+    except Exception:
+        raise RuntimeError(
+            "Set DATABASE_URL env var or configure Airflow connection 'beach_watch_db'"
+        )
+
+
+def _read_sql(sql: str) -> pd.DataFrame:
+    engine = get_engine()
+    raw = engine.raw_connection()
+    try:
+        return pd.read_sql(sql, raw)
+    finally:
+        raw.close()
+
+
+# --------------------------------------------------------------------------- #
+# Data access
+# --------------------------------------------------------------------------- #
+def fetch_scorecard(countries=None, water_types=None) -> pd.DataFrame:
+    try:
+        wheres = ["latitude IS NOT NULL", "longitude IS NOT NULL"]
+        if countries:
+            quoted = ",".join(f"'{c}'" for c in countries)
+            wheres.append(f"country_code IN ({quoted})")
+        if water_types:
+            quoted = ",".join(f"'{t}'" for t in water_types)
+            wheres.append(f"water_type IN ({quoted})")
+        return _read_sql(f"""
+            SELECT bathing_water_id, name, country_code, water_type,
+                   latitude, longitude, current_classification,
+                   trend_direction, trend_slope, rainfall_sensitive, hidden_gem
+            FROM marts.mart_site_scorecard
+            WHERE {' AND '.join(wheres)}
+        """)
+    except Exception as e:
+        logger.warning("fetch_scorecard failed: %s", e)
+        return pd.DataFrame()
+
+
+from functools import lru_cache
+
+
+@lru_cache(maxsize=64)
+def _fetch_scorecard_cached(countries_key, water_types_key):
+    countries = list(countries_key) if countries_key else None
+    water_types = list(water_types_key) if water_types_key else None
+    return fetch_scorecard(countries, water_types)
+
+
+def get_scorecard(countries=None, water_types=None) -> pd.DataFrame:
+    """Cached scorecard lookup — map pan/zoom re-renders shouldn't hit the DB."""
+    c_key = tuple(sorted(countries)) if countries else None
+    w_key = tuple(sorted(water_types)) if water_types else None
+    return _fetch_scorecard_cached(c_key, w_key)
+
+
+def fetch_all_countries() -> list:
+    try:
+        df = _read_sql(
+            "SELECT DISTINCT country_code FROM marts.mart_site_scorecard ORDER BY 1"
+        )
+        return df["country_code"].tolist()
+    except Exception:
+        return []
+
+
+def fetch_site_detail(bathing_water_id: str):
+    try:
+        safe_id = bathing_water_id.replace("'", "''")
+        timeline = _read_sql(f"""
+            SELECT class_year, classification, class_score
+            FROM staging.stg_bathing_sites
+            WHERE bathing_water_id = '{safe_id}'
+            ORDER BY class_year
+        """)
+        # sample_status included so we can flag pre-season readings honestly —
+        # it is NOT a pass/fail signal, just sample collection context.
+        samples = _read_sql(f"""
+            SELECT sample_date, ecoli_cfu, enterococci_cfu, season, sample_status
+            FROM raw.samples
+            WHERE bathing_water_id = '{safe_id}'
+              AND ecoli_cfu IS NOT NULL
+            ORDER BY sample_date
+        """)
+        return timeline, samples
+    except Exception as e:
+        logger.warning("fetch_site_detail failed: %s", e)
+        return pd.DataFrame(), pd.DataFrame()
+
+
+def fetch_site_extras(bathing_water_id: str) -> dict:
+    """Fields not yet surfaced in the dbt mart — pulled straight from raw.
+    Returns {} on any failure so callers can render without this info.
+    """
+    try:
+        safe_id = bathing_water_id.replace("'", "''")
+        df = _read_sql(f"""
+            SELECT country_name, bw_profile_link
+            FROM raw.bathing_sites
+            WHERE bathing_water_id = '{safe_id}'
+            LIMIT 1
+        """)
+        if df.empty:
+            return {}
+        row = df.iloc[0]
+        return {
+            "country_name": row.get("country_name") or None,
+            "bw_profile_link": row.get("bw_profile_link") or None,
+        }
+    except Exception as e:
+        logger.warning("fetch_site_extras failed: %s", e)
+        return {}
+
+
+def fetch_top_picks(countries=None, water_types=None, hidden_gems_only=False,
+                    limit: int = 18) -> pd.DataFrame:
+    """Best beaches to visit: Excellent + stable/improving, optionally filtered
+    by country, water type, and/or restricted to hidden gems only."""
+    try:
+        where = ["current_classification = 'Excellent'",
+                 "trend_direction != 'degrading'"]
+        if countries:
+            quoted = ",".join(f"'{c}'" for c in countries)
+            where.append(f"country_code IN ({quoted})")
+        if water_types:
+            quoted = ",".join(f"'{t}'" for t in water_types)
+            where.append(f"water_type IN ({quoted})")
+        if hidden_gems_only:
+            where.append("hidden_gem IS TRUE")
+        # RANDOM() instead of alphabetical — sorting by name always surfaced
+        # the same handful of beaches starting with "A" on every load.
+        # hidden_gem still sorts first so gems aren't randomised out of view.
+        return _read_sql(f"""
+            SELECT name, country_code, water_type, trend_direction, hidden_gem,
+                   bathing_water_id, latitude, longitude
+            FROM marts.mart_site_scorecard
+            WHERE {' AND '.join(where)}
+            ORDER BY hidden_gem DESC, RANDOM()
+            LIMIT {int(limit)}
+        """)
+    except Exception as e:
+        logger.warning("fetch_top_picks failed: %s", e)
+        return pd.DataFrame()
+
+
+def fetch_country_summary() -> pd.DataFrame:
+    try:
+        return _read_sql("""
+            SELECT country_code, pct_excellent, yoy_pct_excellent_change
+            FROM marts.mart_country_rankings
+            WHERE class_year = (SELECT MAX(class_year) FROM marts.mart_country_rankings)
+            ORDER BY pct_excellent DESC NULLS LAST
+        """)
+    except Exception as e:
+        logger.warning("fetch_country_summary failed: %s", e)
+        return pd.DataFrame()
+
+
+def search_sites(query: str, limit: int = 8) -> pd.DataFrame:
+    try:
+        safe_q = query.replace("'", "''").upper()
+        return _read_sql(f"""
+            SELECT bathing_water_id, name, country_code, current_classification,
+                   latitude, longitude
+            FROM marts.mart_site_scorecard
+            WHERE UPPER(name) LIKE '%{safe_q}%'
+            ORDER BY name
+            LIMIT {int(limit)}
+        """)
+    except Exception as e:
+        logger.warning("search_sites failed: %s", e)
+        return pd.DataFrame()
+
+
+# --------------------------------------------------------------------------- #
+# Figure builders
+# --------------------------------------------------------------------------- #
+def empty_map():
+    fig = go.Figure()
+    fig.update_layout(
+        mapbox_style="carto-positron",
+        mapbox=dict(center=DEFAULT_CENTER, zoom=DEFAULT_ZOOM),
+        margin=dict(l=0, r=0, t=0, b=0),
+        paper_bgcolor="#f7f5f0",
+    )
+    return fig
+
+
+def _add_highlight_marker(fig: go.Figure, highlight: dict) -> None:
+    """Draw a distinct gold-ring marker over the selected search result so
+    it's unmistakable among any other nearby dots.
+    """
+    if not highlight:
+        return
+    fig.add_trace(go.Scattermapbox(
+        lat=[highlight["lat"]], lon=[highlight["lon"]],
+        mode="markers",
+        marker=dict(size=22, color="rgba(0,0,0,0)"),
+        hoverinfo="skip",
+        showlegend=False,
+    ))
+    fig.add_trace(go.Scattermapbox(
+        lat=[highlight["lat"]], lon=[highlight["lon"]],
+        mode="markers",
+        marker=dict(size=20, color="#f4b400", opacity=0.35),
+        hoverinfo="skip",
+        showlegend=False,
+    ))
+
+
+def build_map(df: pd.DataFrame, zoom: float = None, center: dict = None,
+              highlight: dict = None, uirevision: str = "stable") -> go.Figure:
+    if df.empty:
+        return empty_map()
+
+    zoom = zoom if zoom is not None else DEFAULT_ZOOM
+    center = center or DEFAULT_CENTER
+
+    df = df.copy()
+    df["current_classification"] = df["current_classification"].fillna("Unknown")
+
+    fig = px.scatter_mapbox(
+        df,
+        lat="latitude",
+        lon="longitude",
+        color="current_classification",
+        color_discrete_map=MAP_COLORS,
+        category_orders={"current_classification": CLASS_ORDER},
+        hover_name="name",
+        hover_data={"country_code": True, "latitude": False, "longitude": False},
+        custom_data=["bathing_water_id"],
+        opacity=0.85,
+    )
+    fig.update_traces(marker={"size": 7})
+    fig.update_layout(
+        mapbox_style="carto-positron",
+        mapbox=dict(center=center, zoom=zoom),
+        margin=dict(l=0, r=0, t=0, b=0),
+        legend=dict(
+            title="", orientation="h", yanchor="bottom", y=0.01,
+            xanchor="left", x=0.01, bgcolor="rgba(255,255,255,0.9)",
+            font=dict(size=12),
+        ),
+        uirevision=uirevision,
+        paper_bgcolor="#f7f5f0",
+    )
+    _add_highlight_marker(fig, highlight)
+    return fig
+
+
+def build_timeline_chart(timeline: pd.DataFrame) -> go.Figure:
+    if timeline.empty:
+        fig = go.Figure()
+        fig.update_layout(height=140, paper_bgcolor="white", plot_bgcolor="white",
+                          margin=dict(l=10, r=10, t=10, b=10),
+                          annotations=[dict(text="No history available", showarrow=False,
+                                            font=dict(color="#999"))])
+        return fig
+
+    colors = [CLASS_INFO.get(c, CLASS_INFO["Unknown"])["color"] for c in timeline["classification"]]
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=timeline["class_year"], y=timeline["class_score"],
+        mode="lines+markers",
+        marker=dict(color=colors, size=11, line=dict(width=2, color="white")),
+        line=dict(color="#cfcac0", width=2),
+        text=timeline["classification"],
+        hovertemplate="%{x}: %{text}<extra></extra>",
+    ))
+    fig.update_layout(
+        height=150,
+        margin=dict(l=10, r=10, t=10, b=20),
+        paper_bgcolor="white", plot_bgcolor="white",
+        yaxis=dict(tickvals=[1, 2, 3, 4],
+                   ticktext=["Poor", "OK", "Good", "Excellent"],
+                   range=[0.5, 4.5], gridcolor="#eee"),
+        xaxis=dict(dtick=2, gridcolor="#eee"),
+        showlegend=False,
+        font=dict(family="Inter, sans-serif", size=11),
+    )
+    return fig
+
+
+def build_country_strip(df: pd.DataFrame) -> go.Figure:
+    if df.empty:
+        return go.Figure().update_layout(height=1)
+    df = df.sort_values("pct_excellent", ascending=True).tail(15)
+    fig = go.Figure(go.Bar(
+        x=df["pct_excellent"], y=df["country_code"].map(lambda c: COUNTRY_NAMES.get(c, c)),
+        orientation="h",
+        marker_color="#1a9e5c",
+        text=df["pct_excellent"].apply(lambda v: f"{v:.0f}%"),
+        textposition="outside",
+        hovertemplate="<b>%{y}</b>: %{x:.1f}%% excellent<extra></extra>",
+    ))
+    fig.update_layout(
+        height=440,
+        margin=dict(l=10, r=40, t=10, b=30),
+        paper_bgcolor="white", plot_bgcolor="white",
+        xaxis=dict(title="% of beaches rated Excellent", range=[0, 108], gridcolor="#eee"),
+        yaxis=dict(title=""),
+        font=dict(family="Inter, sans-serif", size=12),
+    )
+    return fig
+
+
+# --------------------------------------------------------------------------- #
+# UI component builders
+# --------------------------------------------------------------------------- #
+def _testing_confidence_line(samples: pd.DataFrame):
+    """Plain-language sample-count/freshness line. Purely factual — counts
+    and dates, no interpretation of pass/fail (the source data doesn't
+    actually carry a per-sample pass/fail flag, only lab methodology codes).
+    Returns None if there's nothing to say.
+    """
+    if samples is None or samples.empty:
+        return None
+
+    latest = samples.sort_values("sample_date").iloc[-1]
+    latest_season = latest.get("season")
+    season_samples = (samples[samples["season"] == latest_season]
+                      if latest_season is not None else samples)
+    count = len(season_samples)
+    last_date = latest["sample_date"]
+    last_date_str = last_date.strftime("%d %b %Y") if hasattr(last_date, "strftime") else str(last_date)
+
+    season_txt = f" in {int(latest_season)}" if latest_season is not None else ""
+    line = f"Tested {count} time{'s' if count != 1 else ''}{season_txt} — last checked {last_date_str}."
+
+    caveat = None
+    if latest.get("sample_status") == "preSeasonSample":
+        caveat = "Most recent sample was taken before the swimming season officially opened."
+
+    return line, caveat
+
+
+def verdict_card(site_row, timeline, samples=None, extras=None,
+                 hidden_gem=False, rainfall_sensitive=False):
+    """The main answer card: is this beach safe to swim at, right now."""
+    extras = extras or {}
+    classification = (timeline.iloc[-1]["classification"]
+                      if not timeline.empty else site_row.get("current_classification") or "Unknown")
+    info = CLASS_INFO.get(classification, CLASS_INFO["Unknown"])
+    trend = site_row.get("trend_direction") or "stable"
+    t_emoji, t_label, t_detail = TREND_COPY.get(trend, TREND_COPY["stable"])
+
+    badges = []
+    if hidden_gem:
+        badges.append(dbc.Badge("💎 Hidden gem", color="light", text_color="dark",
+                                 className="me-2", style={"border": "1px solid #e0d8c8"}))
+    if rainfall_sensitive:
+        badges.append(dbc.Badge("🌧️ Rain-sensitive", color="light", text_color="dark",
+                                 style={"border": "1px solid #e0d8c8"}))
+
+    country_label = (extras.get("country_name")
+                     or COUNTRY_NAMES.get(site_row.get("country_code"), site_row.get("country_code", "")))
+
+    confidence = _testing_confidence_line(samples)
+    confidence_line, confidence_caveat = confidence if confidence else (None, None)
+
+    return html.Div([
+        html.Div([
+            html.Span(info["emoji"], style={"fontSize": "2.2rem", "marginRight": "12px"}),
+            html.Div([
+                html.Div(site_row.get("name", "").title(), style={
+                    "fontSize": "1.15rem", "fontWeight": 700, "color": "#2b2823",
+                    "lineHeight": "1.2",
+                }),
+                html.Div(country_label,
+                         style={"fontSize": "0.85rem", "color": "#8a8477"}),
+            ]),
+        ], style={"display": "flex", "alignItems": "center", "marginBottom": "14px"}),
+
+        html.Div([
+            html.Div(info["verdict"], style={
+                "fontSize": "1.5rem", "fontWeight": 800, "color": info["color"],
+            }),
+            html.Div(info["detail"], style={"fontSize": "0.9rem", "color": "#5c5648", "marginTop": "2px"}),
+        ], style={
+            "backgroundColor": info["bg"], "borderRadius": "12px",
+            "padding": "16px 18px", "marginBottom": "14px",
+        }),
+
+        html.Div([
+            html.Span(t_emoji, style={"fontSize": "1.1rem", "marginRight": "8px"}),
+            html.Span(t_label, style={"fontWeight": 600, "color": "#2b2823"}),
+        ], style={"marginBottom": "2px"}),
+        html.Div(t_detail, style={"fontSize": "0.85rem", "color": "#8a8477", "marginBottom": "14px"}),
+
+        html.Div(badges, className="mb-3") if badges else None,
+
+        # Testing freshness/confidence — factual sample count + last-checked date.
+        html.Div([
+            html.Div(confidence_line, style={"fontSize": "0.82rem", "color": "#5c5648"}),
+            html.Div(confidence_caveat, style={
+                "fontSize": "0.78rem", "color": "#b0842a", "marginTop": "2px",
+            }) if confidence_caveat else None,
+        ], className="mb-3") if confidence_line else None,
+
+        html.Div("Quality over the last 11 years", style={
+            "fontSize": "0.8rem", "fontWeight": 600, "color": "#8a8477",
+            "textTransform": "uppercase", "letterSpacing": "0.03em", "marginBottom": "4px",
+        }),
+        dcc.Graph(figure=build_timeline_chart(timeline), config={"displayModeBar": False}),
+    ])
+
+
+def welcome_panel():
+    return html.Div([
+        html.Div("🏖️", style={"fontSize": "3rem", "textAlign": "center", "marginBottom": "8px"}),
+        html.Div("Click any beach on the map", style={
+            "textAlign": "center", "fontWeight": 600, "color": "#2b2823", "fontSize": "1.05rem",
+        }),
+        html.Div("to see its swim safety rating and 11-year history.", style={
+            "textAlign": "center", "color": "#8a8477", "fontSize": "0.9rem",
+        }),
+    ], style={"padding": "60px 20px"})
+
+
+def beach_card(row):
+    """A single card for the Top Picks card grid."""
+    gem = " 💎" if row.get("hidden_gem") else ""
+    return dbc.Col(
+        html.Div([
+            html.Div("🟢", style={"fontSize": "1.6rem"}),
+            html.Div(f"{row['name'].title()}{gem}", style={
+                "fontWeight": 700, "color": "#2b2823", "fontSize": "0.95rem",
+                "marginTop": "6px", "lineHeight": "1.25", "minHeight": "2.4em",
+            }),
+            html.Div(COUNTRY_NAMES.get(row["country_code"], row["country_code"]),
+                     style={"fontSize": "0.8rem", "color": "#8a8477"}),
+            html.Div((row.get("water_type") or "").title(), style={
+                "fontSize": "0.72rem", "color": "#b0aa9c", "marginTop": "2px",
+            }),
+        ], style={
+            "backgroundColor": "white", "borderRadius": "14px", "padding": "16px",
+            "border": "1px solid #eee6d8", "height": "100%",
+        }),
+        xs=6, sm=4, md=3, lg=2, className="mb-3",
+    )
+
+
+# --------------------------------------------------------------------------- #
+# App
+# --------------------------------------------------------------------------- #
+FONT_URL = "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+
+app = dash.Dash(
+    __name__,
+    external_stylesheets=[dbc.themes.FLATLY, FONT_URL],
+    suppress_callback_exceptions=True,
+    title="EU Beach Watch",
+)
+server = app.server
+
+app.index_string = """
+<!DOCTYPE html>
+<html>
+    <head>
+        {%metas%}
+        <title>{%title%}</title>
+        {%favicon%}
+        {%css%}
+        <style>
+            body { font-family: 'Inter', sans-serif; background-color: #f7f5f0; }
+            .nav-tabs .nav-link.active {
+                color: #1a9e5c !important; border-bottom: 3px solid #1a9e5c !important;
+                font-weight: 600;
+            }
+            .nav-tabs .nav-link { color: #8a8477; border: none; }
+            .Select-control, .dash-dropdown .Select-control { border-radius: 10px !important; }
+            .search-result-item:hover { background-color: #f7f5f0; }
+            .search-result-item:last-child { border-bottom: none !important; }
+        </style>
+    </head>
+    <body>
+        {%app_entry%}
+        <footer>{%config%}{%scripts%}{%renderer%}</footer>
+    </body>
+</html>
+"""
+
+try:
+    COUNTRY_OPTIONS = [
+        {"label": COUNTRY_NAMES.get(c, c), "value": c} for c in fetch_all_countries()
+    ]
+except Exception:
+    COUNTRY_OPTIONS = []
+
+
+def header():
+    return html.Div([
+        dbc.Container([
+            html.Div([
+                html.Span("🏖️ ", style={"fontSize": "1.6rem"}),
+                html.Span("EU Beach Watch", style={"fontSize": "1.4rem", "fontWeight": 800, "color": "#2b2823"}),
+            ], className="d-flex align-items-center"),
+            html.Div(
+                "Water quality at 22,000+ European beaches, straight from official EEA monitoring data.",
+                style={"color": "#8a8477", "fontSize": "0.9rem", "marginTop": "2px"},
+            ),
+        ], className="py-3"),
+    ], style={"backgroundColor": "white", "borderBottom": "1px solid #eee6d8"})
+
+
+def find_beach_tab():
+    return html.Div([
+        dbc.Row([
+            dbc.Col([
+                dbc.Label("Search by beach name", style={"fontWeight": 600, "fontSize": "0.85rem"}),
+                html.Div([
+                    dcc.Input(
+                        id="search-box", type="text", placeholder="e.g. Nice, Palma, Zakynthos...",
+                        debounce=True, autoComplete="off", style={
+                            "width": "100%", "padding": "10px 14px", "borderRadius": "10px",
+                            "border": "1px solid #ddd6c4", "fontSize": "0.95rem",
+                        },
+                    ),
+                    html.Div(id="search-results", style={
+                        "position": "absolute", "top": "calc(100% + 4px)", "left": 0, "right": 0,
+                        "zIndex": 1000, "maxHeight": "320px", "overflowY": "auto",
+                        "boxShadow": "0 8px 24px rgba(0,0,0,0.12)", "borderRadius": "10px",
+                    }),
+                ], style={"position": "relative"}),
+            ], width=12, lg=5, className="mb-3"),
+            dbc.Col([
+                dbc.Label("Or browse by country", style={"fontWeight": 600, "fontSize": "0.85rem"}),
+                dcc.Dropdown(
+                    id="filter-country", options=COUNTRY_OPTIONS, multi=True,
+                    placeholder="All countries",
+                ),
+            ], width=12, lg=7, className="mb-3"),
+        ], className="mt-3"),
+
+        dbc.Row([
+            dbc.Col(
+                dcc.Checklist(
+                    id="filter-water-type",
+                    options=[{"label": " Sea beaches only", "value": "coastal"}],
+                    value=["coastal"],
+                    inputStyle={"marginRight": "6px"},
+                    style={"fontSize": "0.88rem", "color": "#5c5648"},
+                ),
+                width="auto",
+            ),
+            dbc.Col(
+                html.Span(
+                    "Untick to also show river, lake and estuary bathing sites.",
+                    style={"fontSize": "0.8rem", "color": "#b0aa9c"},
+                ),
+                width="auto", className="d-flex align-items-center",
+            ),
+        ], className="mb-2 gx-2"),
+
+        dbc.Row([
+            dbc.Col(
+                dbc.Spinner(dcc.Graph(id="site-map", style={"height": "62vh", "borderRadius": "14px"},
+                                      config={"scrollZoom": True}), color="success"),
+                width=12, lg=8,
+            ),
+            dbc.Col(
+                html.Div(
+                    dbc.Spinner(html.Div(id="site-detail-panel", children=welcome_panel())),
+                    style={
+                        "backgroundColor": "white", "borderRadius": "14px",
+                        "border": "1px solid #eee6d8", "padding": "20px",
+                        "height": "62vh", "overflowY": "auto",
+                    },
+                ),
+                width=12, lg=4,
+            ),
+        ], className="g-3"),
+    ])
+
+
+def top_picks_tab():
+    return html.Div([
+        html.Div([
+            html.Div("🏆 Great beaches to visit right now", style={
+                "fontSize": "1.15rem", "fontWeight": 700, "color": "#2b2823", "marginTop": "20px",
+            }),
+            html.Div(
+                "Excellent water quality that's held steady or improved over the years. 💎 marks a lesser-known spot.",
+                style={"color": "#8a8477", "fontSize": "0.88rem", "marginBottom": "14px"},
+            ),
+        ]),
+
+        dbc.Row([
+            dbc.Col([
+                dbc.Label("Country", style={"fontWeight": 600, "fontSize": "0.85rem"}),
+                dcc.Dropdown(
+                    id="picks-filter-country", options=COUNTRY_OPTIONS, multi=True,
+                    placeholder="All countries",
+                ),
+            ], width=12, md=5, className="mb-2"),
+            dbc.Col([
+                dbc.Label("Water type", style={"fontWeight": 600, "fontSize": "0.85rem"}),
+                dcc.Checklist(
+                    id="picks-filter-water-type",
+                    options=[{"label": " Sea beaches only", "value": "coastal"}],
+                    value=[], inputStyle={"marginRight": "6px"},
+                    style={"fontSize": "0.88rem", "color": "#5c5648", "marginTop": "6px"},
+                ),
+            ], width=12, md=4, className="mb-2"),
+            dbc.Col([
+                dbc.Label(" ", style={"display": "block", "fontSize": "0.85rem"}),
+                dcc.Checklist(
+                    id="picks-filter-gems",
+                    options=[{"label": " 💎 Hidden gems only", "value": "gems"}],
+                    value=[], inputStyle={"marginRight": "6px"},
+                    style={"fontSize": "0.88rem", "color": "#5c5648", "marginTop": "6px"},
+                ),
+            ], width=12, md=3, className="mb-2"),
+        ], className="mb-2"),
+
+        dbc.Row(id="top-picks-grid", className="g-2"),
+
+        html.Hr(style={"margin": "32px 0", "borderColor": "#eee6d8"}),
+
+        html.Div([
+            html.Div("🌧️ Good to know before you go", style={
+                "fontSize": "1.15rem", "fontWeight": 700, "color": "#2b2823",
+            }),
+            html.Div(
+                "At some beaches, water quality tends to dip for a day or two after heavy rain "
+                "(rainwater run-off can carry bacteria into the water). If it's rained heavily in "
+                "the last day or two, it's worth checking local advisories before swimming — "
+                "especially at beaches flagged 🌧️ Rain-sensitive on their beach card.",
+                style={"color": "#5c5648", "fontSize": "0.9rem", "marginTop": "6px", "maxWidth": "640px"},
+            ),
+        ]),
+    ])
+
+
+def country_comparison_tab():
+    return html.Div([
+        html.Div([
+            html.Div("🗺️ How countries compare", style={
+                "fontSize": "1.15rem", "fontWeight": 700, "color": "#2b2823", "marginTop": "20px",
+            }),
+            html.Div(
+                "Share of monitored beaches rated Excellent, most recent season.",
+                style={"color": "#8a8477", "fontSize": "0.88rem", "marginBottom": "14px"},
+            ),
+        ]),
+        html.Div(
+            dbc.Spinner(dcc.Graph(id="country-strip", config={"displayModeBar": False})),
+            style={
+                "backgroundColor": "white", "borderRadius": "14px", "border": "1px solid #eee6d8",
+                "padding": "20px",
+            },
+        ),
+    ])
+
+
+app.layout = html.Div([
+    dcc.Store(id="selected-site"),
+    header(),
+    dbc.Container([
+        dbc.Tabs([
+            dbc.Tab(find_beach_tab(), label="Find a Beach", tab_id="tab-find"),
+            dbc.Tab(top_picks_tab(), label="Top Picks", tab_id="tab-picks"),
+            dbc.Tab(country_comparison_tab(), label="Country Comparison", tab_id="tab-country"),
+        ], id="tabs", active_tab="tab-find", className="mt-2"),
+    ], fluid="lg", className="pb-5"),
+])
+
+
+# --------------------------------------------------------------------------- #
+# Callbacks
+# --------------------------------------------------------------------------- #
+@app.callback(
+    Output("site-map", "figure"),
+    Input("filter-country", "value"),
+    Input("filter-water-type", "value"),
+    Input("selected-site", "data"),
+)
+def update_map(countries, water_types, selected_site):
+    """
+    Rebuilds the map only when filters or a search selection change — never
+    on pan/zoom. `uirevision` controls whether Plotly keeps the user's
+    current view or jumps to a new one: a constant value ("stable") means
+    "preserve whatever the user is looking at", while a value that changes
+    (keyed to the selected site) tells Plotly to apply the new center/zoom
+    we're passing in, so search selection can still navigate the map.
+    """
+    triggered = dash.ctx.triggered_id
+
+    if triggered == "selected-site" and selected_site:
+        zoom, center = 12.5, {"lat": selected_site["lat"], "lon": selected_site["lon"]}
+        uirevision = f"nav-{selected_site['bathing_water_id']}"
+    else:
+        zoom, center = DEFAULT_ZOOM, DEFAULT_CENTER
+        uirevision = "stable"
+
+    df = get_scorecard(countries, water_types)
+    return build_map(df, zoom=zoom, center=center, highlight=selected_site, uirevision=uirevision)
+
+
+@app.callback(
+    Output("site-detail-panel", "children"),
+    Input("site-map", "clickData"),
+    Input("selected-site", "data"),
+)
+def update_detail(click_data, selected_site):
+    triggered = dash.ctx.triggered_id
+
+    if triggered == "selected-site":
+        if not selected_site:
+            return welcome_panel()
+        return _render_site_detail(selected_site["bathing_water_id"])
+
+    if not click_data:
+        return welcome_panel()
+    try:
+        point = click_data["points"][0]
+        bw_id = point["customdata"][0]
+    except (KeyError, IndexError):
+        return welcome_panel()
+
+    return _render_site_detail(bw_id)
+
+
+def _render_site_detail(bw_id):
+    scorecard = get_scorecard()
+    site_row = scorecard[scorecard["bathing_water_id"] == bw_id]
+    if site_row.empty:
+        return welcome_panel()
+    site_row = site_row.iloc[0]
+
+    timeline, samples = fetch_site_detail(bw_id)
+    extras = fetch_site_extras(bw_id)
+    return verdict_card(
+        site_row, timeline, samples, extras,
+        hidden_gem=bool(site_row.get("hidden_gem")),
+        rainfall_sensitive=bool(site_row.get("rainfall_sensitive")),
+    )
+
+
+@app.callback(
+    Output("search-results", "children"),
+    Input("search-box", "value"),
+)
+def update_search(query):
+    if not query or len(query) < 2:
+        return None
+    results = search_sites(query)
+    if results.empty:
+        return html.Div("No beaches found.", style={
+            "backgroundColor": "white", "borderRadius": "10px", "border": "1px solid #eee6d8",
+            "padding": "10px", "color": "#8a8477", "fontSize": "0.85rem",
+        })
+
+    items = []
+    for _, r in results.iterrows():
+        info = CLASS_INFO.get(r["current_classification"], CLASS_INFO["Unknown"])
+        items.append(html.Div([
+            html.Span(info["emoji"], className="me-2"),
+            html.Span(r["name"].title(), style={"fontWeight": 600}),
+            html.Span(f"  ·  {COUNTRY_NAMES.get(r['country_code'], r['country_code'])}",
+                     style={"color": "#8a8477", "fontSize": "0.85rem"}),
+        ], id={"type": "search-result", "index": r["bathing_water_id"]}, n_clicks=0, style={
+            "padding": "10px 12px", "borderBottom": "1px solid #f0ece0", "cursor": "pointer",
+        }, className="search-result-item"))
+
+    return html.Div(items, style={
+        "backgroundColor": "white", "borderRadius": "10px",
+        "border": "1px solid #eee6d8",
+    })
+
+
+@app.callback(
+    Output("selected-site", "data"),
+    Output("search-box", "value"),
+    Output("search-results", "children", allow_duplicate=True),
+    Input({"type": "search-result", "index": dash.ALL}, "n_clicks"),
+    State("search-results", "children"),
+    prevent_initial_call=True,
+)
+def select_search_result(n_clicks_list, current_results):
+    if not any(n_clicks_list) or not dash.ctx.triggered_id:
+        return dash.no_update, dash.no_update, dash.no_update
+
+    bw_id = dash.ctx.triggered_id["index"]
+    scorecard = get_scorecard()
+    row = scorecard[scorecard["bathing_water_id"] == bw_id]
+    if row.empty:
+        return dash.no_update, dash.no_update, dash.no_update
+    row = row.iloc[0]
+
+    return (
+        {"bathing_water_id": bw_id, "lat": float(row["latitude"]), "lon": float(row["longitude"])},
+        "",   # clear the search box — filling it with the name would re-trigger
+              # update_search and re-open the dropdown with a single lingering row
+        None,
+    )
+
+
+@app.callback(
+    Output("top-picks-grid", "children"),
+    Input("tabs", "active_tab"),
+    Input("picks-filter-country", "value"),
+    Input("picks-filter-water-type", "value"),
+    Input("picks-filter-gems", "value"),
+)
+def update_top_picks(active_tab, countries, water_types, gems):
+    if active_tab != "tab-picks":
+        return dash.no_update
+    df = fetch_top_picks(
+        countries=countries, water_types=water_types,
+        hidden_gems_only=bool(gems), limit=18,
+    )
+    if df.empty:
+        return html.Div(
+            "No beaches match these filters — try widening your search.",
+            style={"color": "#8a8477"},
+        )
+    return [beach_card(row) for _, row in df.iterrows()]
+
+
+@app.callback(
+    Output("country-strip", "figure"),
+    Input("tabs", "active_tab"),
+)
+def update_country_strip(active_tab):
+    if active_tab != "tab-country":
+        return dash.no_update
+    df = fetch_country_summary()
+    return build_country_strip(df)
+
+
+if __name__ == "__main__":
+    app.run(debug=False, host="0.0.0.0", port=8050)
