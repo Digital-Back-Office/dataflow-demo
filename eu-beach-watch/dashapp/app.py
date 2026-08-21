@@ -15,6 +15,7 @@ and inviting rather than "developer console".
 
 import logging
 import os
+import threading
 
 import dash
 from dash import dcc, html, Input, Output, State
@@ -22,6 +23,8 @@ import dash_bootstrap_components as dbc
 import plotly.graph_objs as go
 import plotly.express as px
 import pandas as pd
+
+import places
 
 logger = logging.getLogger(__name__)
 
@@ -256,6 +259,40 @@ def search_sites(query: str, limit: int = 8) -> pd.DataFrame:
     except Exception as e:
         logger.warning("search_sites failed: %s", e)
         return pd.DataFrame()
+
+
+# --------------------------------------------------------------------------- #
+# Place search (search by hometown/city, not just beach name)
+# --------------------------------------------------------------------------- #
+PLACE_ID_PREFIX = "place::"
+
+# Warm the gazetteer index in the background — first build takes ~10s
+# (download + parse) and we don't want the first user search to pay for it.
+threading.Thread(target=places.get_index, daemon=True).start()
+
+
+def _encode_place_id(place: dict) -> str:
+    """Pack a place result into a pattern-matching callback id string."""
+    import json
+    from urllib.parse import quote
+    return PLACE_ID_PREFIX + quote(json.dumps(place))
+
+
+def _decode_place_id(place_id: str) -> dict | None:
+    import json
+    from urllib.parse import unquote
+    try:
+        return json.loads(unquote(place_id[len(PLACE_ID_PREFIX):]))
+    except Exception:
+        return None
+
+
+def _count_and_nearest(lat: float, lon: float,
+                       radius_km: float = 40.0, limit: int = 10) -> pd.DataFrame:
+    """Scorecard sites within radius of a place, nearest first."""
+    scorecard = get_scorecard()
+    return places.nearby_sites(lat, lon, scorecard,
+                               radius_km=radius_km, limit=limit)
 
 
 # --------------------------------------------------------------------------- #
@@ -593,10 +630,10 @@ def find_beach_tab():
     return html.Div([
         dbc.Row([
             dbc.Col([
-                dbc.Label("Search by beach name", style={"fontWeight": 600, "fontSize": "0.85rem"}),
+                dbc.Label("Search by beach or place", style={"fontWeight": 600, "fontSize": "0.85rem"}),
                 html.Div([
                     dcc.Input(
-                        id="search-box", type="text", placeholder="e.g. Nice, Palma, Zakynthos...",
+                        id="search-box", type="text", placeholder="Beach, town or city — e.g. Bordeaux, Nice, Θεσσαλονίκη...",
                         debounce=True, autoComplete="off", style={
                             "width": "100%", "padding": "10px 14px", "borderRadius": "10px",
                             "border": "1px solid #ddd6c4", "fontSize": "0.95rem",
@@ -773,14 +810,23 @@ def update_map(countries, water_types, selected_site):
     triggered = dash.ctx.triggered_id
 
     if triggered == "selected-site" and selected_site:
-        zoom, center = 12.5, {"lat": selected_site["lat"], "lon": selected_site["lon"]}
-        uirevision = f"nav-{selected_site['bathing_water_id']}"
+        if selected_site.get("type") == "place":
+            # City-level view: zoom 10.5 frames roughly a 40km radius, matching
+            # the "nearby" radius used for the detail-panel list.
+            zoom, center = 10.5, {"lat": selected_site["lat"], "lon": selected_site["lon"]}
+            uirevision = f"place-{selected_site['label']}"
+            highlight = None
+        else:
+            zoom, center = 12.5, {"lat": selected_site["lat"], "lon": selected_site["lon"]}
+            uirevision = f"nav-{selected_site['bathing_water_id']}"
+            highlight = selected_site
     else:
         zoom, center = DEFAULT_ZOOM, DEFAULT_CENTER
         uirevision = "stable"
+        highlight = None
 
     df = get_scorecard(countries, water_types)
-    return build_map(df, zoom=zoom, center=center, highlight=selected_site, uirevision=uirevision)
+    return build_map(df, zoom=zoom, center=center, highlight=highlight, uirevision=uirevision)
 
 
 @app.callback(
@@ -794,6 +840,8 @@ def update_detail(click_data, selected_site):
     if triggered == "selected-site":
         if not selected_site:
             return welcome_panel()
+        if selected_site.get("type") == "place":
+            return _render_place_detail(selected_site)
         return _render_site_detail(selected_site["bathing_water_id"])
 
     if not click_data:
@@ -823,6 +871,53 @@ def _render_site_detail(bw_id):
     )
 
 
+def _render_place_detail(place: dict):
+    """Panel shown after picking a place: every monitored site near it,
+    nearest first. Rows are clickable via the shared search-result ids.
+    """
+    label = place.get("label", "this place")
+    nearby = _count_and_nearest(place["lat"], place["lon"], radius_km=40.0, limit=10)
+
+    if nearby.empty:
+        return html.Div([
+            html.Div("📍 " + label, style={
+                "fontSize": "1.15rem", "fontWeight": 700, "color": "#2b2823",
+            }),
+            html.Div(
+                "No monitored bathing sites within 40 km of here. Try a coastal "
+                "town, or browse by country below the search box.",
+                style={"color": "#8a8477", "fontSize": "0.9rem", "marginTop": "10px"},
+            ),
+        ])
+
+    rows = []
+    for _, r in nearby.iterrows():
+        info = CLASS_INFO.get(r["current_classification"], CLASS_INFO["Unknown"])
+        dist = r["_dist_km"]
+        dist_txt = f"{dist:.0f} km" if dist >= 1 else "<1 km"
+        rows.append(html.Div([
+            html.Span(info["emoji"], className="me-2"),
+            html.Span(str(r["name"]).title(), style={"fontWeight": 600, "fontSize": "0.92rem"}),
+            html.Br(),
+            html.Span(f"{dist_txt} away · {COUNTRY_NAMES.get(r['country_code'], r['country_code'])}",
+                      style={"color": "#8a8477", "fontSize": "0.78rem", "marginLeft": "26px"}),
+        ], id={"type": "search-result", "index": r["bathing_water_id"]}, n_clicks=0,
+           style={"padding": "10px 4px", "borderBottom": "1px solid #f0ece0",
+                  "cursor": "pointer"}, className="search-result-item"))
+
+    return html.Div([
+        html.Div(f"📍 Beaches near {label}", style={
+            "fontSize": "1.15rem", "fontWeight": 700, "color": "#2b2823",
+        }),
+        html.Div(
+            "Monitored swimming sites within 40 km, nearest first. "
+            "Click one for its safety rating and history.",
+            style={"color": "#8a8477", "fontSize": "0.85rem", "marginBottom": "8px"},
+        ),
+        html.Div(rows),
+    ])
+
+
 @app.callback(
     Output("search-results", "children"),
     Input("search-box", "value"),
@@ -830,26 +925,70 @@ def _render_site_detail(bw_id):
 def update_search(query):
     if not query or len(query) < 2:
         return None
+
+    groups = []
+
+    # Places first — most people search where they're going, not a beach name.
+    try:
+        found_places = places.search_places(query, limit=3)
+    except Exception as e:
+        logger.warning("place search failed: %s", e)
+        found_places = []
+    if found_places:
+        scorecard = get_scorecard()
+        items = []
+        for p in found_places:
+            near = places.nearby_sites(p["lat"], p["lon"], scorecard,
+                                       radius_km=40.0, limit=1000)
+            n_beaches = len(near)
+            sub = COUNTRY_NAMES.get(p["country_code"], p["country_code"])
+            if n_beaches:
+                sub += f" · {n_beaches} swimming site{'s' if n_beaches != 1 else ''} nearby"
+            items.append(html.Div([
+                html.Span("📍", className="me-2"),
+                html.Span(p["name"], style={"fontWeight": 600}),
+                html.Span(f"  ·  {sub}",
+                          style={"color": "#8a8477", "fontSize": "0.85rem"}),
+            ], id={"type": "search-result",
+                   "index": _encode_place_id({**p, "n_nearby": n_beaches})},
+               n_clicks=0, style={
+                   "padding": "10px 12px", "borderBottom": "1px solid #f0ece0",
+                   "cursor": "pointer" if n_beaches else "default",
+               }, className="search-result-item"))
+        groups.append(html.Div(
+            [html.Div("PLACES", style={
+                "fontSize": "0.7rem", "fontWeight": 700, "color": "#b0aa9c",
+                "letterSpacing": "0.06em", "padding": "8px 12px 2px",
+            })] + items))
+
+    # Direct beach-name matches (still useful for people who know the name).
     results = search_sites(query)
-    if results.empty:
-        return html.Div("No beaches found.", style={
+    if results.empty and not groups:
+        return html.Div("No beaches or places found.", style={
             "backgroundColor": "white", "borderRadius": "10px", "border": "1px solid #eee6d8",
             "padding": "10px", "color": "#8a8477", "fontSize": "0.85rem",
         })
 
-    items = []
-    for _, r in results.iterrows():
-        info = CLASS_INFO.get(r["current_classification"], CLASS_INFO["Unknown"])
-        items.append(html.Div([
-            html.Span(info["emoji"], className="me-2"),
-            html.Span(r["name"].title(), style={"fontWeight": 600}),
-            html.Span(f"  ·  {COUNTRY_NAMES.get(r['country_code'], r['country_code'])}",
-                     style={"color": "#8a8477", "fontSize": "0.85rem"}),
-        ], id={"type": "search-result", "index": r["bathing_water_id"]}, n_clicks=0, style={
-            "padding": "10px 12px", "borderBottom": "1px solid #f0ece0", "cursor": "pointer",
-        }, className="search-result-item"))
+    if not results.empty:
+        items = []
+        for _, r in results.iterrows():
+            info = CLASS_INFO.get(r["current_classification"], CLASS_INFO["Unknown"])
+            items.append(html.Div([
+                html.Span(info["emoji"], className="me-2"),
+                html.Span(r["name"].title(), style={"fontWeight": 600}),
+                html.Span(f"  ·  {COUNTRY_NAMES.get(r['country_code'], r['country_code'])}",
+                         style={"color": "#8a8477", "fontSize": "0.85rem"}),
+            ], id={"type": "search-result", "index": r["bathing_water_id"]}, n_clicks=0, style={
+                "padding": "10px 12px", "borderBottom": "1px solid #f0ece0", "cursor": "pointer",
+            }, className="search-result-item"))
+        label = "BEACHES" if groups else ""
+        header = (html.Div(label, style={
+            "fontSize": "0.7rem", "fontWeight": 700, "color": "#b0aa9c",
+            "letterSpacing": "0.06em", "padding": "8px 12px 2px",
+        }) if label else None)
+        groups.append(html.Div([header] + items))
 
-    return html.Div(items, style={
+    return html.Div(groups, style={
         "backgroundColor": "white", "borderRadius": "10px",
         "border": "1px solid #eee6d8",
     })
@@ -867,7 +1006,22 @@ def select_search_result(n_clicks_list, current_results):
     if not any(n_clicks_list) or not dash.ctx.triggered_id:
         return dash.no_update, dash.no_update, dash.no_update
 
-    bw_id = dash.ctx.triggered_id["index"]
+    index = dash.ctx.triggered_id["index"]
+
+    # A place result: navigate the map to that area instead of one beach.
+    if isinstance(index, str) and index.startswith(PLACE_ID_PREFIX):
+        place = _decode_place_id(index)
+        if not place:
+            return dash.no_update, dash.no_update, dash.no_update
+        return (
+            {"type": "place", "lat": float(place["lat"]), "lon": float(place["lon"]),
+             "label": place["name"], "country_code": place["country_code"],
+             "n_nearby": int(place.get("n_nearby") or 0)},
+            "",
+            None,
+        )
+
+    bw_id = index
     scorecard = get_scorecard()
     row = scorecard[scorecard["bathing_water_id"] == bw_id]
     if row.empty:
