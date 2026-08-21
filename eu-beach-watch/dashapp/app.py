@@ -576,6 +576,22 @@ app = dash.Dash(
 )
 server = app.server
 
+# Keystrokes flow through a client-side 2s debounce (assets/bw_search.js):
+# typing shows the "Searching…" indicator immediately, and only when the user
+# pauses does the value land in `search-debounce`, triggering the real search.
+app.clientside_callback(
+    dash.ClientsideFunction(namespace="bwsearch", function_name="debounce"),
+    Output("search-debounce", "data"),
+    Input("search-box", "value"),
+)
+app.clientside_callback(
+    dash.ClientsideFunction(namespace="bwsearch", function_name="loadingIndicator"),
+    Output("search-loading", "style"),
+    Input("search-box", "value"),
+    allow_duplicate=True,
+    prevent_initial_call=True,
+)
+
 app.index_string = """
 <!DOCTYPE html>
 <html>
@@ -634,17 +650,32 @@ def find_beach_tab():
                 html.Div([
                     dcc.Input(
                         id="search-box", type="text", placeholder="Beach, town or city — e.g. Bordeaux, Nice, Θεσσαλονίκη...",
-                        debounce=True, autoComplete="off", style={
+                        debounce=False, autoComplete="off", style={
                             "width": "100%", "padding": "10px 14px", "borderRadius": "10px",
                             "border": "1px solid #ddd6c4", "fontSize": "0.95rem",
                         },
                     ),
+                    # Shown client-side while the user is typing (before the
+                    # 2s debounce fires); the search callback hides it again.
+                    html.Div([
+                        dbc.Spinner(size="sm", color="success", spinnerClassName="me-2"),
+                        "Searching beaches & places…",
+                    ], id="search-loading", style={
+                        "display": "none", "position": "absolute",
+                        "top": "calc(100% + 4px)", "left": 0, "right": 0,
+                        "zIndex": 1000, "backgroundColor": "white",
+                        "borderRadius": "10px", "border": "1px solid #eee6d8",
+                        "padding": "12px", "color": "#8a8477", "fontSize": "0.85rem",
+                        "boxShadow": "0 8px 24px rgba(0,0,0,0.12)",
+                        "alignItems": "center",
+                    }),
                     html.Div(id="search-results", style={
                         "position": "absolute", "top": "calc(100% + 4px)", "left": 0, "right": 0,
                         "zIndex": 1000, "maxHeight": "320px", "overflowY": "auto",
                         "boxShadow": "0 8px 24px rgba(0,0,0,0.12)", "borderRadius": "10px",
                     }),
                 ], style={"position": "relative"}),
+                dcc.Store(id="search-debounce"),
             ], width=12, lg=5, className="mb-3"),
             dbc.Col([
                 dbc.Label("Or browse by country", style={"fontWeight": 600, "fontSize": "0.85rem"}),
@@ -660,7 +691,7 @@ def find_beach_tab():
                 dcc.Checklist(
                     id="filter-water-type",
                     options=[{"label": " Sea beaches only", "value": "coastal"}],
-                    value=["coastal"],
+                    value=[],
                     inputStyle={"marginRight": "6px"},
                     style={"fontSize": "0.88rem", "color": "#5c5648"},
                 ),
@@ -920,11 +951,20 @@ def _render_place_detail(place: dict):
 
 @app.callback(
     Output("search-results", "children"),
-    Input("search-box", "value"),
+    Output("search-loading", "style", allow_duplicate=True),
+    Input("search-debounce", "data"),
+    State("search-box", "value"),
+    prevent_initial_call=True,
 )
-def update_search(query):
-    if not query or len(query) < 2:
-        return None
+def update_search(query, box_value):
+    # A newer keystroke arrived while this debounced search was in flight —
+    # drop it; the newer value will trigger its own search.
+    if query != box_value:
+        return dash.no_update, dash.no_update
+    loading_hidden = {"display": "none"}
+
+    if not query or len(query.strip()) < 2:
+        return None, loading_hidden
 
     groups = []
 
@@ -967,7 +1007,7 @@ def update_search(query):
         return html.Div("No beaches or places found.", style={
             "backgroundColor": "white", "borderRadius": "10px", "border": "1px solid #eee6d8",
             "padding": "10px", "color": "#8a8477", "fontSize": "0.85rem",
-        })
+        }), loading_hidden
 
     if not results.empty:
         items = []
@@ -991,7 +1031,7 @@ def update_search(query):
     return html.Div(groups, style={
         "backgroundColor": "white", "borderRadius": "10px",
         "border": "1px solid #eee6d8",
-    })
+    }), loading_hidden
 
 
 @app.callback(
