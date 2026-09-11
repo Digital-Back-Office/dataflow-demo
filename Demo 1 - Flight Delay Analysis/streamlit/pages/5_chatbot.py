@@ -117,7 +117,7 @@ def get_or_create_chat():
     if "gemini_chat" not in st.session_state:
         context = get_cached_context()
         model = genai.GenerativeModel(
-            model_name="gemini-2.0-flash",
+            model_name="gemini-3.5-flash-lite",
             system_instruction=SYSTEM_PROMPT.format(context=context),
         )
         st.session_state.gemini_chat = model.start_chat(history=[])

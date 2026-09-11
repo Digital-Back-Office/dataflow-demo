@@ -32,15 +32,15 @@ DB_CONN_ID = "beach_watch_db"
 
 # Plain-language classification copy — no jargon, no "class_score".
 CLASS_INFO = {
-    "Excellent":  {"emoji": "🟢", "color": "#1a9e5c", "bg": "#e8f8f0", "verdict": "Safe to swim",
+    "Excellent":  {"emoji": "🟢", "color": "#00C853", "bg": "#e8f8f0", "verdict": "Safe to swim",
                    "detail": "Consistently excellent water quality. A great choice."},
-    "Good":       {"emoji": "🔵", "color": "#2176d2", "bg": "#e8f2fc", "verdict": "Safe to swim",
+    "Good":       {"emoji": "🔵", "color": "#0091EA", "bg": "#e8f2fc", "verdict": "Safe to swim",
                    "detail": "Good water quality overall."},
-    "Sufficient": {"emoji": "🟡", "color": "#c98a08", "bg": "#fdf3df", "verdict": "Generally OK",
+    "Sufficient": {"emoji": "🟡", "color": "#FF9100", "bg": "#fdf3df", "verdict": "Generally OK",
                    "detail": "Meets the minimum standard — check conditions if it's rained recently."},
-    "Poor":       {"emoji": "🔴", "color": "#d3402f", "bg": "#fbe9e7", "verdict": "Avoid swimming",
+    "Poor":       {"emoji": "🔴", "color": "#D50000", "bg": "#fbe9e7", "verdict": "Avoid swimming",
                    "detail": "Water quality has failed standards. Consider a different beach."},
-    "Unknown":    {"emoji": "⚪", "color": "#8a8a8a", "bg": "#f1f1f1", "verdict": "No recent data",
+    "Unknown":    {"emoji": "⚪", "color": "#757575", "bg": "#f1f1f1", "verdict": "No recent data",
                    "detail": "We don't have a recent classification for this site."},
 }
 CLASS_ORDER = ["Excellent", "Good", "Sufficient", "Poor"]
@@ -301,7 +301,7 @@ def _count_and_nearest(lat: float, lon: float,
 def empty_map():
     fig = go.Figure()
     fig.update_layout(
-        mapbox_style="carto-positron",
+        mapbox_style="open-street-map",
         mapbox=dict(center=DEFAULT_CENTER, zoom=DEFAULT_ZOOM),
         margin=dict(l=0, r=0, t=0, b=0),
         paper_bgcolor="#f7f5f0",
@@ -352,11 +352,11 @@ def build_map(df: pd.DataFrame, zoom: float = None, center: dict = None,
         hover_name="name",
         hover_data={"country_code": True, "latitude": False, "longitude": False},
         custom_data=["bathing_water_id"],
-        opacity=0.85,
+        opacity=1.0,
     )
-    fig.update_traces(marker={"size": 7})
+    fig.update_traces(marker={"size": 10})
     fig.update_layout(
-        mapbox_style="carto-positron",
+        mapbox_style="open-street-map",
         mapbox=dict(center=center, zoom=zoom),
         margin=dict(l=0, r=0, t=0, b=0),
         legend=dict(
