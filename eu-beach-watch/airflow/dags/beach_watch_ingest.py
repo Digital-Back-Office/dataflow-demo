@@ -23,11 +23,6 @@ from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.hooks.base import BaseHook
 from airflow.operators.python import PythonOperator
-from airflow.providers.common.sql.operators.sql import SQLExecuteQueryOperator
-
-from beach_watch_common import CREATE_SCHEMA_SQL, SAMPLE_START_YEAR, SAMPLE_END_YEAR
-from beach_watch_common import ingest_sites as _ingest_sites_impl
-from beach_watch_common import ingest_samples as _ingest_samples_impl
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +36,7 @@ DB_CONN_ID = "beach_watch_db"
 
 # SAMPLE_START_YEAR / SAMPLE_END_YEAR live in beach_watch_common.py so this
 # DAG and scripts/reload_all_data.py always use the same demo window.
+# beach_watch_common is imported inside each task function, not at module level.
 
 OPEN_METEO_URL = "https://archive-api.open-meteo.com/v1/archive"
 RAINFALL_LOOKBACK_DAYS = 7
@@ -76,7 +72,21 @@ def _dbt_env():
 # Task callables — thin Airflow wrappers around beach_watch_common, which
 # holds the actual ingestion logic shared with scripts/reload_all_data.py.
 # --------------------------------------------------------------------------- #
+def create_schema_tables(**context):
+    from beach_watch_common import CREATE_SCHEMA_SQL
+
+    pg = _connect()
+    try:
+        pg.autocommit = True
+        with pg.cursor() as cur:
+            cur.execute(CREATE_SCHEMA_SQL)
+    finally:
+        pg.close()
+
+
 def ingest_sites(**context):
+    from beach_watch_common import ingest_sites as _ingest_sites_impl
+
     pg = _connect()
     try:
         _ingest_sites_impl(pg)
@@ -85,6 +95,12 @@ def ingest_sites(**context):
 
 
 def ingest_samples(**context):
+    from beach_watch_common import (
+        ingest_samples as _ingest_samples_impl,
+        SAMPLE_START_YEAR,
+        SAMPLE_END_YEAR,
+    )
+
     pg = _connect()
     try:
         _ingest_samples_impl(pg, SAMPLE_START_YEAR, SAMPLE_END_YEAR)
@@ -284,11 +300,9 @@ with DAG(
     tags=["eu-beach-watch"],
 ) as dag:
 
-    create_schema = SQLExecuteQueryOperator(
+    create_schema = PythonOperator(
         task_id="create_schema",
-        conn_id=DB_CONN_ID,
-        sql=CREATE_SCHEMA_SQL,
-        autocommit=True,
+        python_callable=create_schema_tables,
     )
 
     sites = PythonOperator(
